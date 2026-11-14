@@ -47,12 +47,27 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+          navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
+            {
+              urlPattern: ({ url }) => url.pathname.startsWith('/api/tiles/'),
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'carto-map-tiles',
+                expiration: {
+                  maxEntries: 800,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
             {
               urlPattern: /^https:\/\/[a-d]\.basemaps\.cartocdn\.com\/.*/i,
               handler: 'CacheFirst',
               options: {
-                cacheName: 'carto-map-tiles',
+                cacheName: 'carto-map-tiles-direct',
                 expiration: {
                   maxEntries: 800,
                   maxAgeSeconds: 60 * 60 * 24 * 30,

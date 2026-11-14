@@ -13,8 +13,7 @@ interface CartoMapViewProps {
   onAddStopAtCoords: (lat: number, lng: number) => void;
 }
 
-const CARTO_VOYAGER_URL =
-  'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png';
+const CARTO_VOYAGER_URL = '/api/tiles/{s}/{z}/{x}/{y}{r}.png';
 
 export const CartoMapView: React.FC<CartoMapViewProps> = ({
   trip,

@@ -83,6 +83,41 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  app.get('/api/tiles/:s/:z/:x/:file', async (req, res) => {
+    const { s, z, x, file } = req.params;
+    if (
+      !/^[a-d]$/.test(s) ||
+      !/^\d{1,2}$/.test(z) ||
+      !/^\d+$/.test(x) ||
+      !/^\d+(@2x)?\.png$/.test(file)
+    ) {
+      return res.status(400).send('Invalid tile parameters');
+    }
+
+    const apiKey = (process.env.CARTO_API_KEY || process.env.VITE_CARTO_API_KEY || '').trim();
+    const upstreamUrl = `https://${s}.basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${file}${
+      apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''
+    }`;
+
+    try {
+      const upstream = await fetch(upstreamUrl);
+      if (!upstream.ok) {
+        return res.status(upstream.status).send('Tile unavailable');
+      }
+      const contentType = upstream.headers.get('content-type') || 'image/png';
+      const arrayBuf = await upstream.arrayBuffer();
+      res.setHeader('Content-Type', contentType);
+      res.setHeader(
+        'Cache-Control',
+        apiKey ? 'public, max-age=2592000' : 'no-cache'
+      );
+      res.send(Buffer.from(arrayBuf));
+    } catch (error) {
+      console.error('CARTO tile proxy failed:', error);
+      res.status(502).send('Failed to fetch map tile');
+    }
+  });
+
   app.get('/api/auth/status', async (_req, res) => {
     try {
       const hasAdmin = await hasConfiguredAdmin();
