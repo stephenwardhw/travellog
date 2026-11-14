@@ -8,7 +8,7 @@ import { db } from './src/db/index.ts';
 import { events, pdfs, photos, trips } from './src/db/schema.ts';
 import { AuthRequest, requireAuth } from './src/middleware/auth.ts';
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
 const PHOTOS_DIR = path.join(UPLOADS_ROOT, 'photos');
 const PDFS_DIR = path.join(UPLOADS_ROOT, 'pdfs');
@@ -618,4 +618,7 @@ if (globalThis.customElements && !globalThis.customElements.get("vite-error-over
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start Fieldlog server:', err);
+  process.exit(1);
+});
