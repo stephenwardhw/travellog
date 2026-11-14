@@ -1,0 +1,86 @@
+export interface TripRecord {
+  clientId: string;
+  title: string;
+  destination: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  description: string;
+  updatedAt: string;
+  createdAt: string;
+  deletedAt: string | null;
+  syncStatus?: 'synced' | 'pending';
+}
+
+export interface EventRecord {
+  clientId: string;
+  tripClientId: string;
+  eventDate: string; // YYYY-MM-DD
+  eventTime: string;
+  location: string;
+  latitude: number | null;
+  longitude: number | null;
+  details: string;
+  journalEntry: string;
+  updatedAt: string;
+  createdAt: string;
+  deletedAt: string | null;
+  syncStatus?: 'synced' | 'pending';
+}
+
+export interface PhotoRecord {
+  clientId: string;
+  eventClientId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  diskPath?: string;
+  caption: string;
+  createdAt: string;
+  deletedAt: string | null;
+  blob?: Blob;
+  hasLocalFile?: boolean;
+  syncStatus?: 'synced' | 'pending';
+}
+
+export interface PdfRecord {
+  clientId: string;
+  eventClientId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  diskPath?: string;
+  extractedText: string;
+  createdAt: string;
+  deletedAt: string | null;
+  blob?: Blob;
+  hasLocalFile?: boolean;
+  syncStatus?: 'synced' | 'pending';
+}
+
+export type SyncOpType =
+  | 'trip_upsert'
+  | 'trip_delete'
+  | 'event_upsert'
+  | 'event_delete'
+  | 'photo_upload'
+  | 'photo_delete'
+  | 'pdf_upload'
+  | 'pdf_delete';
+
+export interface SyncQueueItem {
+  id?: number;
+  type: SyncOpType;
+  clientId: string;
+  createdAt: string;
+}
+
+export type AppView = 'agenda' | 'calendar' | 'map' | 'search';
+
+export interface SearchMatch {
+  event: EventRecord;
+  trip: TripRecord | undefined;
+  source: 'location' | 'details' | 'journal' | 'pdf';
+  pdfFilename?: string;
+  pdfClientId?: string;
+  snippet: string;
+}
