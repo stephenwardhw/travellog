@@ -74,7 +74,21 @@ export interface SyncQueueItem {
   createdAt: string;
 }
 
-export type AppView = 'agenda' | 'calendar' | 'map' | 'search';
+export interface LocalUser {
+  id: number;
+  uid: string;
+  email: string;
+  name: string;
+  role: 'admin' | 'user';
+  createdAt: string;
+}
+
+export interface AuthSession {
+  token: string;
+  user: LocalUser;
+}
+
+export type AppView = 'agenda' | 'calendar' | 'map' | 'search' | 'admin';
 
 export interface SearchMatch {
   event: EventRecord;

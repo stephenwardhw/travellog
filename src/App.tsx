@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
 import {
   Calendar as CalendarIcon,
   Edit3,
@@ -11,16 +10,17 @@ import {
   RefreshCw,
   Search as SearchIcon,
   Trash2,
+  Users,
   Wifi,
   WifiOff,
 } from 'lucide-react';
-import { auth } from './lib/firebase';
 import { offlineDb } from './lib/offlineDb';
 import { useNetworkStatus } from './lib/network';
 import { runFullSync } from './lib/syncEngine';
 import type { ParsedCsvStop } from './lib/csvParser';
 import type {
   AppView,
+  AuthSession,
   EventRecord,
   PdfRecord,
   PhotoRecord,
@@ -32,6 +32,7 @@ import { AgendaView } from './components/AgendaView';
 import { CalendarView } from './components/CalendarView';
 import { CartoMapView } from './components/CartoMapView';
 import { SearchView } from './components/SearchView';
+import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
 import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
@@ -44,7 +45,7 @@ function makeId(): string {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<AuthSession | null>(null);
   const [authReady, setAuthReady] = useState(false);
 
   const [view, setView] = useState<AppView>('agenda');
@@ -110,32 +111,93 @@ export default function App() {
     });
   }, []);
 
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (nextUser) => {
-      if (nextUser) {
-        const previousUid = await offlineDb.getMeta<string>('userUid');
-        if (previousUid && previousUid !== nextUser.uid) {
-          await offlineDb.clearAllUserData();
-        }
-        await offlineDb.setMeta('userUid', nextUser.uid);
-        await loadFromLocalDb();
+  const handleSignOut = useCallback(async () => {
+    await offlineDb.setMeta('authSession', null);
+    setSession(null);
+    setView('agenda');
+  }, []);
+
+  const handleAuthenticated = useCallback(
+    async (nextSession: AuthSession) => {
+      const previousUid = await offlineDb.getMeta<string>('userUid');
+      if (previousUid && previousUid !== nextSession.user.uid) {
+        await offlineDb.clearAllUserData();
       }
-      setUser(nextUser);
+      await offlineDb.setMeta('userUid', nextSession.user.uid);
+      await offlineDb.setMeta('authSession', nextSession);
+      await loadFromLocalDb();
+      setSession(nextSession);
+      setView('agenda');
       setAuthReady(true);
-    });
-    return () => unsub();
-  }, [loadFromLocalDb]);
+    },
+    [loadFromLocalDb]
+  );
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const savedSession = await offlineDb.getMeta<AuthSession | null>('authSession');
+        if (!active) return;
+
+        if (savedSession?.token && savedSession?.user) {
+          await loadFromLocalDb();
+          if (!active) return;
+          setSession(savedSession);
+          setAuthReady(true);
+
+          if (navigator.onLine) {
+            try {
+              const res = await fetch('/api/auth/me', {
+                headers: { Authorization: `Bearer ${savedSession.token}` },
+              });
+              if (!active) return;
+              if (res.status === 401) {
+                await handleSignOut();
+                return;
+              }
+              if (res.ok) {
+                const data = await res.json();
+                if (data?.user && active) {
+                  const updatedSession: AuthSession = {
+                    token: savedSession.token,
+                    user: data.user,
+                  };
+                  await offlineDb.setMeta('authSession', updatedSession);
+                  setSession(updatedSession);
+                }
+              }
+            } catch {
+              // Offline or server unreachable; retain cached offline session
+            }
+          }
+        } else {
+          setAuthReady(true);
+        }
+      } catch {
+        if (active) setAuthReady(true);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [loadFromLocalDb, handleSignOut]);
 
   const triggerSync = useCallback(
-    async (explicitUser?: User | null, explicitWifiOnly?: boolean) => {
-      const targetUser = explicitUser ?? user;
+    async (explicitSession?: AuthSession | null, explicitWifiOnly?: boolean) => {
+      const targetSession = explicitSession ?? session;
       const targetWifiOnly = explicitWifiOnly ?? wifiOnlySync;
-      if (!targetUser) return;
+      if (!targetSession) return;
 
       setIsSyncing(true);
       setSyncNotice(null);
       try {
-        const result = await runFullSync(targetUser, targetWifiOnly);
+        const result = await runFullSync(targetSession.token, targetWifiOnly);
+        if (result.status === 'unauthorized') {
+          await handleSignOut();
+          return;
+        }
         await loadFromLocalDb();
         if (result.status === 'paused-cellular') {
           setSyncNotice('Cellular connection detected — media & data sync paused until Wi-Fi.');
@@ -146,16 +208,22 @@ export default function App() {
         setIsSyncing(false);
       }
     },
-    [user, wifiOnlySync, loadFromLocalDb]
+    [session, wifiOnlySync, loadFromLocalDb, handleSignOut]
   );
 
   // Auto-sync when online + Wi-Fi condition is met
   useEffect(() => {
-    if (!user) return;
+    if (!session) return;
     if (network.isOnline && (!wifiOnlySync || network.isWifiReady)) {
-      triggerSync(user, wifiOnlySync);
+      triggerSync(session, wifiOnlySync);
     }
-  }, [user, network.isOnline, network.isWifiReady, wifiOnlySync, triggerSync]);
+  }, [session?.token, network.isOnline, network.isWifiReady, wifiOnlySync, triggerSync]);
+
+  useEffect(() => {
+    if (session && session.user.role !== 'admin' && view === 'admin') {
+      setView('agenda');
+    }
+  }, [session, view]);
 
   const activeTrip = useMemo(
     () => trips.find((t) => t.clientId === activeTripClientId) || trips[0] || null,
@@ -508,8 +576,8 @@ export default function App() {
     const next = !wifiOnlySync;
     setWifiOnlySync(next);
     await offlineDb.setMeta('wifiOnlySync', next);
-    if (user && network.isOnline && (!next || network.isWifiReady)) {
-      triggerSync(user, next);
+    if (session && network.isOnline && (!next || network.isWifiReady)) {
+      triggerSync(session, next);
     }
   };
 
@@ -540,9 +608,11 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    return <AuthGate />;
+  if (!session) {
+    return <AuthGate onAuthenticated={handleAuthenticated} />;
   }
+
+  const isAdmin = session.user.role === 'admin';
 
   const activeDrawerPhotos = selectedEvent ? photosByEvent.get(selectedEvent.clientId) || [] : [];
   const activeDrawerPdfs = selectedEvent ? pdfsByEvent.get(selectedEvent.clientId) || [] : [];
@@ -572,6 +642,7 @@ export default function App() {
                 ['calendar', 'Calendar'],
                 ['map', 'Map'],
                 ['search', 'Search'],
+                ...(isAdmin ? ([['admin', 'Admin']] as const) : []),
               ] as const
             ).map(([key, label]) => (
               <button
@@ -707,9 +778,9 @@ export default function App() {
 
             <button
               type="button"
-              onClick={() => signOut(auth)}
+              onClick={handleSignOut}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
-              title={user.email || 'Account'}
+              title={session.user.email}
             >
               <LogOut className="w-3.5 h-3.5" />
               Sign out
@@ -717,9 +788,11 @@ export default function App() {
           </div>
         </div>
 
-        {(syncNotice || activeTrip) && (
+        {(syncNotice || activeTrip || session.user) && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 tabular-nums">
             <div className="flex items-center gap-2 flex-wrap">
+              <span>{session.user.name || session.user.email}</span>
+              <span aria-hidden="true">·</span>
               {activeTrip ? (
                 <>
                   <span>{activeTrip.destination || 'Trip'}</span>
@@ -789,12 +862,22 @@ export default function App() {
             onSelectEvent={openExistingEvent}
           />
         )}
+
+        {view === 'admin' && isAdmin && (
+          <AdminUsersView
+            token={session.token}
+            currentUser={session.user}
+            onUnauthorized={handleSignOut}
+          />
+        )}
       </main>
 
       {/* Mobile Fixed Bottom Tab Bar */}
       <nav
         aria-label="Primary mobile navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 backdrop-blur-md border-t border-slate-200 grid grid-cols-4 items-center"
+        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 backdrop-blur-md border-t border-slate-200 grid items-center ${
+          isAdmin ? 'grid-cols-5' : 'grid-cols-4'
+        }`}
       >
         {(
           [
@@ -802,6 +885,7 @@ export default function App() {
             ['calendar', 'Calendar', CalendarIcon],
             ['map', 'Map', MapIcon],
             ['search', 'Search', SearchIcon],
+            ...(isAdmin ? ([['admin', 'Admin', Users]] as const) : []),
           ] as const
         ).map(([key, label, Icon]) => {
           const active = view === key;

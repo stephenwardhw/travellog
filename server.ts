@@ -6,7 +6,18 @@ import multer from 'multer';
 import { and, eq } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
 import { events, pdfs, photos, trips } from './src/db/schema.ts';
-import { type AuthRequest, requireAuth } from './src/middleware/auth.ts';
+import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
+import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
+import {
+  countLocalAdmins,
+  createLocalUser,
+  deleteLocalUser,
+  findUserByEmail,
+  findUserById,
+  hasConfiguredAdmin,
+  listUsers,
+  updateLocalUser,
+} from './src/db/users.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
@@ -70,6 +81,231 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get('/api/auth/status', async (_req, res) => {
+    try {
+      const hasAdmin = await hasConfiguredAdmin();
+      res.json({ needsSetup: !hasAdmin });
+    } catch (error) {
+      console.error('Auth status check failed:', error);
+      res.status(500).json({ error: 'Unable to verify authentication status.' });
+    }
+  });
+
+  app.post('/api/auth/bootstrap', async (req, res) => {
+    try {
+      const hasAdmin = await hasConfiguredAdmin();
+      if (hasAdmin) {
+        return res.status(403).json({
+          error: 'An administrator account already exists. Please sign in.',
+        });
+      }
+
+      const { name, email, password } = req.body || {};
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      const cleanPassword = String(password || '');
+      const cleanName = String(name || '').trim() || 'Administrator';
+
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
+      }
+      if (cleanPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      }
+
+      const existing = await findUserByEmail(cleanEmail);
+      let user;
+      if (existing) {
+        user = await updateLocalUser(existing.id, {
+          name: cleanName,
+          role: 'admin',
+          passwordHash: hashPassword(cleanPassword),
+        });
+      } else {
+        user = await createLocalUser({
+          email: cleanEmail,
+          name: cleanName,
+          passwordHash: hashPassword(cleanPassword),
+          role: 'admin',
+        });
+      }
+
+      if (!user) {
+        return res.status(500).json({ error: 'Failed to create administrator.' });
+      }
+
+      const token = signSessionToken(user);
+      res.status(201).json({ token, user });
+    } catch (error) {
+      console.error('Bootstrap admin failed:', error);
+      res.status(500).json({ error: 'Failed to create administrator account.' });
+    }
+  });
+
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const { email, password } = req.body || {};
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      const cleanPassword = String(password || '');
+
+      if (!cleanEmail || !cleanPassword) {
+        return res.status(400).json({ error: 'Email and password are required.' });
+      }
+
+      const found = await findUserByEmail(cleanEmail);
+      if (!found || !found.passwordHash || !verifyPassword(cleanPassword, found.passwordHash)) {
+        return res.status(401).json({ error: 'Invalid email or password.' });
+      }
+
+      const safeUser = {
+        id: found.id,
+        uid: found.uid,
+        email: found.email,
+        name: found.name,
+        role: found.role,
+        createdAt: found.createdAt,
+      };
+      const token = signSessionToken(safeUser);
+      res.json({ token, user: safeUser });
+    } catch (error) {
+      console.error('Login failed:', error);
+      res.status(500).json({ error: 'Sign-in failed. Please try again.' });
+    }
+  });
+
+  app.get('/api/auth/me', requireAuth, (req: AuthRequest, res) => {
+    res.json({ user: req.user });
+  });
+
+  app.get('/api/admin/users', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const allUsers = await listUsers();
+      res.json({ users: allUsers });
+    } catch (error) {
+      console.error('Admin list users failed:', error);
+      res.status(500).json({ error: 'Failed to load users.' });
+    }
+  });
+
+  app.post('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+    try {
+      const { name, email, password, role } = req.body || {};
+      const cleanEmail = String(email || '').trim().toLowerCase();
+      const cleanName = String(name || '').trim();
+      const cleanPassword = String(password || '');
+      const cleanRole: 'admin' | 'user' = role === 'admin' ? 'admin' : 'user';
+
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        return res.status(400).json({ error: 'Valid email address is required.' });
+      }
+      if (cleanPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      }
+
+      const existing = await findUserByEmail(cleanEmail);
+      if (existing) {
+        return res.status(409).json({ error: 'A user with this email already exists.' });
+      }
+
+      const created = await createLocalUser({
+        email: cleanEmail,
+        name: cleanName || cleanEmail.split('@')[0],
+        passwordHash: hashPassword(cleanPassword),
+        role: cleanRole,
+      });
+
+      res.status(201).json({ user: created });
+    } catch (error) {
+      console.error('Admin create user failed:', error);
+      res.status(500).json({ error: 'Failed to create user.' });
+    }
+  });
+
+  app.patch('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const targetId = Number(req.params.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return res.status(400).json({ error: 'Invalid user id.' });
+      }
+
+      const target = await findUserById(targetId);
+      if (!target) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+
+      const { name, role, password } = req.body || {};
+      const updates: { name?: string; role?: 'admin' | 'user'; passwordHash?: string } = {};
+
+      if (typeof name === 'string') updates.name = name;
+      if (role === 'admin' || role === 'user') {
+        if (target.role === 'admin' && role === 'user') {
+          const adminCount = await countLocalAdmins();
+          if (adminCount <= 1) {
+            return res
+              .status(400)
+              .json({ error: 'Cannot demote the last remaining administrator.' });
+          }
+        }
+        updates.role = role;
+      }
+      if (typeof password === 'string' && password.length > 0) {
+        if (password.length < 6) {
+          return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+        }
+        updates.passwordHash = hashPassword(password);
+      }
+
+      const updated = await updateLocalUser(targetId, updates);
+      res.json({ user: updated });
+    } catch (error) {
+      console.error('Admin update user failed:', error);
+      res.status(500).json({ error: 'Failed to update user.' });
+    }
+  });
+
+  app.delete('/api/admin/users/:id', requireAuth, requireAdmin, async (req: AuthRequest, res) => {
+    try {
+      const targetId = Number(req.params.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return res.status(400).json({ error: 'Invalid user id.' });
+      }
+      if (req.dbUserId === targetId) {
+        return res.status(400).json({ error: 'You cannot delete your own active account.' });
+      }
+
+      const target = await findUserById(targetId);
+      if (!target) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+
+      if (target.role === 'admin') {
+        const adminCount = await countLocalAdmins();
+        if (adminCount <= 1) {
+          return res
+            .status(400)
+            .json({ error: 'Cannot delete the last remaining administrator.' });
+        }
+      }
+
+      const deleted = await deleteLocalUser(targetId);
+      if (!deleted) {
+        return res.status(404).json({ error: 'User not found.' });
+      }
+
+      const safeUid = sanitizeSegment(deleted.uid);
+      if (safeUid) {
+        const userPhotoDir = path.join(PHOTOS_DIR, safeUid);
+        const userPdfDir = path.join(PDFS_DIR, safeUid);
+        if (fs.existsSync(userPhotoDir)) fs.rmSync(userPhotoDir, { recursive: true, force: true });
+        if (fs.existsSync(userPdfDir)) fs.rmSync(userPdfDir, { recursive: true, force: true });
+      }
+
+      res.json({ deleted: true, id: targetId });
+    } catch (error) {
+      console.error('Admin delete user failed:', error);
+      res.status(500).json({ error: 'Failed to delete user.' });
+    }
   });
 
   app.get('/api/sync', requireAuth, async (req: AuthRequest, res) => {

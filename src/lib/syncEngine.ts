@@ -1,10 +1,9 @@
-import type { User } from 'firebase/auth';
 import { readNetworkState } from './network';
 import { offlineDb } from './offlineDb';
 import type { EventRecord, PdfRecord, PhotoRecord, TripRecord } from '../types/journal';
 
 export interface SyncResult {
-  status: 'synced' | 'offline' | 'paused-cellular' | 'error';
+  status: 'synced' | 'offline' | 'paused-cellular' | 'unauthorized' | 'error';
   pushedCount: number;
   downloadedMediaCount: number;
   errorMessage?: string;
@@ -12,7 +11,7 @@ export interface SyncResult {
 
 let activeSyncPromise: Promise<SyncResult> | null = null;
 
-export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<SyncResult> {
+export async function runFullSync(token: string, wifiOnlySync: boolean): Promise<SyncResult> {
   if (activeSyncPromise) return activeSyncPromise;
 
   activeSyncPromise = (async () => {
@@ -28,9 +27,14 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
     let downloadedMediaCount = 0;
 
     try {
-      const token = await user.getIdToken();
       const authHeaders = {
         Authorization: `Bearer ${token}`,
+      };
+
+      const assertAuthorized = (res: Response) => {
+        if (res.status === 401) {
+          throw new Error('SESSION_UNAUTHORIZED');
+        }
       };
 
       // 1. Push pending local mutations in FIFO order
@@ -49,6 +53,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             headers: { ...authHeaders, 'Content-Type': 'application/json' },
             body: JSON.stringify(trip),
           });
+          assertAuthorized(res);
           if (!res.ok) throw new Error(`Failed to sync trip (${res.status})`);
           await offlineDb.putTrip({ ...trip, syncStatus: 'synced' });
           await offlineDb.removeQueueItem(item.id);
@@ -58,6 +63,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             method: 'DELETE',
             headers: authHeaders,
           });
+          assertAuthorized(res);
           if (!res.ok && res.status !== 404) {
             throw new Error(`Failed to delete trip (${res.status})`);
           }
@@ -74,6 +80,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             headers: { ...authHeaders, 'Content-Type': 'application/json' },
             body: JSON.stringify(event),
           });
+          assertAuthorized(res);
           if (!res.ok) throw new Error(`Failed to sync stop (${res.status})`);
           await offlineDb.putEvent({ ...event, syncStatus: 'synced' });
           await offlineDb.removeQueueItem(item.id);
@@ -83,6 +90,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             method: 'DELETE',
             headers: authHeaders,
           });
+          assertAuthorized(res);
           if (!res.ok && res.status !== 404) {
             throw new Error(`Failed to delete stop (${res.status})`);
           }
@@ -105,6 +113,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             headers: authHeaders,
             body: form,
           });
+          assertAuthorized(res);
           if (!res.ok) throw new Error(`Failed to upload photo (${res.status})`);
           const savedMeta = await res.json();
           await offlineDb.putPhoto({
@@ -120,6 +129,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             method: 'DELETE',
             headers: authHeaders,
           });
+          assertAuthorized(res);
           if (!res.ok && res.status !== 404) {
             throw new Error(`Failed to delete photo (${res.status})`);
           }
@@ -142,6 +152,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             headers: authHeaders,
             body: form,
           });
+          assertAuthorized(res);
           if (!res.ok) throw new Error(`Failed to upload PDF (${res.status})`);
           const savedMeta = await res.json();
           await offlineDb.putPdf({
@@ -157,6 +168,7 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
             method: 'DELETE',
             headers: authHeaders,
           });
+          assertAuthorized(res);
           if (!res.ok && res.status !== 404) {
             throw new Error(`Failed to delete PDF (${res.status})`);
           }
@@ -165,8 +177,9 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
         }
       }
 
-      // 2. Pull remote metadata from Cloud SQL
+      // 2. Pull remote metadata from PostgreSQL
       const pullRes = await fetch('/api/sync', { headers: authHeaders });
+      assertAuthorized(pullRes);
       if (!pullRes.ok) {
         throw new Error(`Failed to pull remote journal (${pullRes.status})`);
       }
@@ -232,7 +245,6 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
 
         let blob = existing?.blob;
         if (!blob) {
-          // Only download physical media files when Wi-Fi condition is satisfied
           const latestNet = readNetworkState();
           if (!wifiOnlySync || latestNet.isWifiReady) {
             const fileRes = await fetch(
@@ -315,6 +327,13 @@ export async function runFullSync(user: User, wifiOnlySync: boolean): Promise<Sy
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Sync failed';
+      if (msg === 'SESSION_UNAUTHORIZED') {
+        return {
+          status: 'unauthorized',
+          pushedCount,
+          downloadedMediaCount,
+        };
+      }
       return {
         status: 'error',
         pushedCount,
