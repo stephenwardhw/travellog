@@ -6,7 +6,7 @@ import multer from 'multer';
 import { and, eq } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
 import { events, pdfs, photos, trips } from './src/db/schema.ts';
-import { AuthRequest, requireAuth } from './src/middleware/auth.ts';
+import { type AuthRequest, requireAuth } from './src/middleware/auth.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
