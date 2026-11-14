@@ -20,6 +20,8 @@ import {
 } from './src/db/users.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
+const MAX_PHOTO_SIZE_MB = Math.max(1, Number(process.env.MAX_PHOTO_SIZE_MB) || 100);
+const MAX_PDF_SIZE_MB = Math.max(1, Number(process.env.MAX_PDF_SIZE_MB) || 100);
 const UPLOADS_ROOT = path.resolve(process.cwd(), 'uploads');
 const PHOTOS_DIR = path.join(UPLOADS_ROOT, 'photos');
 const PDFS_DIR = path.join(UPLOADS_ROOT, 'pdfs');
@@ -55,7 +57,7 @@ const photoUpload = multer({
       cb(null, `${clientId}${safeExt}`);
     },
   }),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: MAX_PHOTO_SIZE_MB * 1024 * 1024 },
 });
 
 const pdfUpload = multer({
@@ -72,7 +74,7 @@ const pdfUpload = multer({
       cb(null, `${clientId}.pdf`);
     },
   }),
-  limits: { fileSize: 35 * 1024 * 1024 },
+  limits: { fileSize: MAX_PDF_SIZE_MB * 1024 * 1024 },
 });
 
 async function startServer() {
@@ -794,6 +796,26 @@ async function startServer() {
       res.status(500).json({ error: 'Failed to delete PDF.' });
     }
   });
+
+  app.use(
+    '/api',
+    (
+      err: unknown,
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({
+            error: `Uploaded file exceeds the server limit (${MAX_PHOTO_SIZE_MB} MB for photos, ${MAX_PDF_SIZE_MB} MB for PDFs).`,
+          });
+        }
+        return res.status(400).json({ error: err.message });
+      }
+      next(err);
+    }
+  );
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
