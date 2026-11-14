@@ -34,10 +34,12 @@ export interface PhotoRecord {
   mimeType: string;
   sizeBytes: number;
   diskPath?: string;
+  thumbDiskPath?: string;
   caption: string;
   createdAt: string;
   deletedAt: string | null;
   blob?: Blob;
+  thumbBlob?: Blob;
   hasLocalFile?: boolean;
   syncStatus?: 'synced' | 'pending';
 }

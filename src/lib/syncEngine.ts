@@ -107,6 +107,9 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           form.append('eventClientId', photo.eventClientId);
           form.append('caption', photo.caption || '');
           form.append('file', photo.blob, photo.filename);
+          if (photo.thumbBlob) {
+            form.append('thumb', photo.thumbBlob, `${photo.clientId}.jpg`);
+          }
 
           const res = await fetch('/api/photos', {
             method: 'POST',
@@ -119,6 +122,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           await offlineDb.putPhoto({
             ...photo,
             diskPath: savedMeta.diskPath,
+            thumbDiskPath: savedMeta.thumbDiskPath,
             hasLocalFile: true,
             syncStatus: 'synced',
           });
@@ -237,10 +241,25 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           await offlineDb.putPhoto({
             ...remotePhoto,
             blob: undefined,
+            thumbBlob: undefined,
             hasLocalFile: false,
             syncStatus: 'synced',
           });
           continue;
+        }
+
+        let thumbBlob = existing?.thumbBlob;
+        if (!thumbBlob) {
+          const latestNet = readNetworkState();
+          if (!wifiOnlySync || latestNet.isWifiReady) {
+            const thumbRes = await fetch(
+              `/api/photos/${encodeURIComponent(remotePhoto.clientId)}/thumb`,
+              { headers: authHeaders }
+            );
+            if (thumbRes.ok) {
+              thumbBlob = await thumbRes.blob();
+            }
+          }
         }
 
         let blob = existing?.blob;
@@ -265,10 +284,12 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           mimeType: remotePhoto.mimeType,
           sizeBytes: remotePhoto.sizeBytes,
           diskPath: remotePhoto.diskPath,
+          thumbDiskPath: remotePhoto.thumbDiskPath,
           caption: remotePhoto.caption,
           createdAt: remotePhoto.createdAt,
           deletedAt: null,
           blob,
+          thumbBlob,
           hasLocalFile: Boolean(blob),
           syncStatus: 'synced',
         });

@@ -17,6 +17,7 @@ import {
 import { offlineDb } from './lib/offlineDb';
 import { useNetworkStatus } from './lib/network';
 import { runFullSync } from './lib/syncEngine';
+import { generateThumbnailBlob } from './lib/imageThumb';
 import type { ParsedCsvStop } from './lib/csvParser';
 import type {
   AppView,
@@ -36,6 +37,7 @@ import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
 import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
+import { PhotoLightbox } from './components/PhotoLightbox';
 
 function makeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -71,6 +73,11 @@ export default function App() {
   const [drawerDefaultCoords, setDrawerDefaultCoords] = useState<{
     lat: number;
     lng: number;
+  } | null>(null);
+  const [lightboxState, setLightboxState] = useState<{
+    photos: PhotoRecord[];
+    initialIndex: number;
+    title?: string;
   } | null>(null);
 
   const network = useNetworkStatus();
@@ -478,6 +485,7 @@ export default function App() {
   const handleAddPhotos = async (eventClientId: string, fileList: FileList) => {
     const now = new Date().toISOString();
     for (const file of Array.from(fileList)) {
+      const thumbBlob = await generateThumbnailBlob(file);
       const photo: PhotoRecord = {
         clientId: makeId(),
         eventClientId,
@@ -488,6 +496,7 @@ export default function App() {
         createdAt: now,
         deletedAt: null,
         blob: file,
+        thumbBlob,
         hasLocalFile: true,
         syncStatus: 'pending',
       };
@@ -510,6 +519,7 @@ export default function App() {
       ...existing,
       deletedAt: now,
       blob: undefined,
+      thumbBlob: undefined,
       hasLocalFile: false,
       syncStatus: 'pending',
     });
@@ -521,6 +531,20 @@ export default function App() {
     await loadFromLocalDb();
     triggerSync();
   };
+
+  const handleCacheFullPhoto = useCallback(
+    async (clientId: string, blob: Blob) => {
+      const existing = await offlineDb.getPhotoRaw(clientId);
+      if (!existing || existing.deletedAt) return;
+      await offlineDb.putPhoto({
+        ...existing,
+        blob,
+        hasLocalFile: true,
+      });
+      await loadFromLocalDb();
+    },
+    [loadFromLocalDb]
+  );
 
   const handleAddPdfs = async (
     eventClientId: string,
@@ -829,6 +853,9 @@ export default function App() {
             photosByEvent={photosByEvent}
             pdfsByEvent={pdfsByEvent}
             onSelectEvent={openExistingEvent}
+            onOpenPhoto={(list, index, title) =>
+              setLightboxState({ photos: list, initialIndex: index, title })
+            }
             onAddStop={(date) => openNewStop(date)}
             onOpenCsvImport={() => setCsvModalOpen(true)}
           />
@@ -935,7 +962,21 @@ export default function App() {
         onDeletePhoto={handleDeletePhoto}
         onAddPdfs={handleAddPdfs}
         onDeletePdf={handleDeletePdf}
+        onOpenPhoto={(list, index, title) =>
+          setLightboxState({ photos: list, initialIndex: index, title })
+        }
       />
+
+      {lightboxState && (
+        <PhotoLightbox
+          photos={lightboxState.photos}
+          initialIndex={lightboxState.initialIndex}
+          title={lightboxState.title}
+          authToken={session.token}
+          onClose={() => setLightboxState(null)}
+          onCacheFullPhoto={handleCacheFullPhoto}
+        />
+      )}
     </div>
   );
 }

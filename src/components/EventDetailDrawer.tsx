@@ -3,6 +3,7 @@ import {
   Camera,
   FileText,
   LocateFixed,
+  Maximize2,
   Trash2,
   Upload,
   X,
@@ -40,33 +41,46 @@ interface EventDetailDrawerProps {
     items: Array<{ file: File; extractedText: string }>
   ) => Promise<void>;
   onDeletePdf: (clientId: string) => Promise<void>;
+  onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
 }
 
 const PhotoCard: React.FC<{
   photo: PhotoRecord;
+  onOpen: () => void;
   onDelete: () => void;
-}> = ({ photo, onDelete }) => {
+}> = ({ photo, onOpen, onDelete }) => {
   const [url, setUrl] = useState<string | null>(null);
+  const displayBlob = photo.thumbBlob || photo.blob;
 
   useEffect(() => {
-    if (!photo.blob) {
+    if (!displayBlob) {
       setUrl(null);
       return;
     }
-    const objUrl = URL.createObjectURL(photo.blob);
+    const objUrl = URL.createObjectURL(displayBlob);
     setUrl(objUrl);
     return () => URL.revokeObjectURL(objUrl);
-  }, [photo.blob]);
+  }, [displayBlob]);
 
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex flex-col">
       <div className="aspect-4/3 bg-slate-100 relative overflow-hidden">
         {url ? (
-          <img
-            src={url}
-            alt={photo.caption || photo.filename}
-            className="w-full h-full object-cover"
-          />
+          <button
+            type="button"
+            onClick={onOpen}
+            className="w-full h-full block group relative cursor-zoom-in focus:outline-none"
+            aria-label={`View high-resolution ${photo.filename}`}
+          >
+            <img
+              src={url}
+              alt={photo.caption || photo.filename}
+              className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+            />
+            <span className="absolute bottom-2 left-2 w-7 h-7 rounded-lg bg-slate-900/65 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <Maximize2 className="w-3.5 h-3.5" />
+            </span>
+          </button>
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center text-xs text-slate-500">
             <HardDrive className="w-5 h-5 mb-1 text-slate-400" />
@@ -75,7 +89,10 @@ const PhotoCard: React.FC<{
         )}
         <button
           type="button"
-          onClick={onDelete}
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
           className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-slate-900/70 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
           aria-label={`Delete ${photo.filename}`}
         >
@@ -106,6 +123,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   onDeletePhoto,
   onAddPdfs,
   onDeletePdf,
+  onOpenPhoto,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [location, setLocation] = useState('');
@@ -116,6 +134,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   const [details, setDetails] = useState('');
   const [journalEntry, setJournalEntry] = useState('');
   const [saving, setSaving] = useState(false);
+  const [attachingPhotos, setAttachingPhotos] = useState(false);
   const [extractingPdf, setExtractingPdf] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [locatingGps, setLocatingGps] = useState(false);
@@ -182,12 +201,14 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
     setError(null);
+    setAttachingPhotos(true);
     try {
       const saved = event || (await persistCurrentEvent());
       await onAddPhotos(saved.clientId, files);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to attach photo.');
     } finally {
+      setAttachingPhotos(false);
       e.target.value = '';
     }
   };
@@ -407,23 +428,25 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
               </div>
               <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
                 <Camera className="w-3.5 h-3.5 text-teal-700" />
-                Attach Photos
+                {attachingPhotos ? 'Processing...' : 'Attach Photos'}
                 <input
                   type="file"
                   accept="image/*"
                   multiple
                   onChange={handlePhotoUpload}
                   className="hidden"
+                  disabled={attachingPhotos}
                 />
               </label>
             </div>
 
             {photos.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                {photos.map((photo) => (
+                {photos.map((photo, idx) => (
                   <PhotoCard
                     key={photo.clientId}
                     photo={photo}
+                    onOpen={() => onOpenPhoto(photos, idx, location || event?.location)}
                     onDelete={() => onDeletePhoto(photo.clientId)}
                   />
                 ))}

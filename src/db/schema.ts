@@ -70,6 +70,7 @@ export const photos = pgTable('photos', {
   mimeType: text('mime_type').notNull(),
   sizeBytes: integer('size_bytes').notNull(),
   diskPath: text('disk_path').notNull(),
+  thumbDiskPath: text('thumb_disk_path').notNull().default(''),
   caption: text('caption').notNull().default(''),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),

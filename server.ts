@@ -43,15 +43,22 @@ function resolveSafeUploadPath(relativeDiskPath: string): string | null {
 
 const photoUpload = multer({
   storage: multer.diskStorage({
-    destination: (req, _file, cb) => {
+    destination: (req, file, cb) => {
       const authReq = req as AuthRequest;
       const uid = sanitizeSegment(authReq.user?.uid || 'anonymous');
-      const dir = path.join(PHOTOS_DIR, uid);
+      const dir =
+        file.fieldname === 'thumb'
+          ? path.join(PHOTOS_DIR, uid, 'thumbs')
+          : path.join(PHOTOS_DIR, uid);
       fs.mkdirSync(dir, { recursive: true });
       cb(null, dir);
     },
     filename: (req, file, cb) => {
       const clientId = sanitizeSegment(String(req.body?.clientId || Date.now()));
+      if (file.fieldname === 'thumb') {
+        cb(null, `${clientId}.jpg`);
+        return;
+      }
       const ext = path.extname(file.originalname || '').toLowerCase() || '.jpg';
       const safeExt = /\.(jpg|jpeg|png|webp|gif|heic|avif)$/i.test(ext) ? ext : '.jpg';
       cb(null, `${clientId}${safeExt}`);
@@ -566,60 +573,111 @@ async function startServer() {
     }
   });
 
-  app.post('/api/photos', requireAuth, photoUpload.single('file'), async (req: AuthRequest, res) => {
-    try {
-      const userId = req.dbUserId!;
-      const file = req.file;
-      const { clientId, eventClientId, caption } = req.body || {};
+  app.post(
+    '/api/photos',
+    requireAuth,
+    photoUpload.fields([
+      { name: 'file', maxCount: 1 },
+      { name: 'thumb', maxCount: 1 },
+    ]),
+    async (req: AuthRequest, res) => {
+      try {
+        const userId = req.dbUserId!;
+        const uploaded = req.files as Record<string, Express.Multer.File[]> | undefined;
+        const file = uploaded?.file?.[0];
+        const thumb = uploaded?.thumb?.[0];
+        const { clientId, eventClientId, caption } = req.body || {};
 
-      if (!file || !clientId || !eventClientId) {
-        if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        return res.status(400).json({ error: 'Missing photo file or metadata.' });
-      }
+        if (!file || !clientId || !eventClientId) {
+          if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
+          return res.status(400).json({ error: 'Missing photo file or metadata.' });
+        }
 
-      const [parentEvent] = await db
-        .select()
-        .from(events)
-        .where(and(eq(events.clientId, String(eventClientId)), eq(events.userId, userId)))
-        .limit(1);
+        const [parentEvent] = await db
+          .select()
+          .from(events)
+          .where(and(eq(events.clientId, String(eventClientId)), eq(events.userId, userId)))
+          .limit(1);
 
-      if (!parentEvent) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        return res.status(404).json({ error: 'Parent event not found on server yet.' });
-      }
+        if (!parentEvent) {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
+          return res.status(404).json({ error: 'Parent event not found on server yet.' });
+        }
 
-      const relativeDiskPath = path.relative(process.cwd(), file.path);
+        const relativeDiskPath = path.relative(process.cwd(), file.path);
+        const relativeThumbPath = thumb ? path.relative(process.cwd(), thumb.path) : '';
 
-      const [saved] = await db
-        .insert(photos)
-        .values({
-          clientId: String(clientId),
-          eventClientId: String(eventClientId),
-          eventId: parentEvent.id,
-          userId,
-          filename: file.originalname || path.basename(file.path),
-          mimeType: file.mimetype || 'image/jpeg',
-          sizeBytes: file.size,
-          diskPath: relativeDiskPath,
-          caption: String(caption || ''),
-          deletedAt: null,
-        })
-        .onConflictDoUpdate({
-          target: photos.clientId,
-          set: {
-            diskPath: relativeDiskPath,
-            sizeBytes: file.size,
+        const [saved] = await db
+          .insert(photos)
+          .values({
+            clientId: String(clientId),
+            eventClientId: String(eventClientId),
+            eventId: parentEvent.id,
+            userId,
+            filename: file.originalname || path.basename(file.path),
             mimeType: file.mimetype || 'image/jpeg',
+            sizeBytes: file.size,
+            diskPath: relativeDiskPath,
+            thumbDiskPath: relativeThumbPath,
             caption: String(caption || ''),
             deletedAt: null,
-          },
-        })
-        .returning();
+          })
+          .onConflictDoUpdate({
+            target: photos.clientId,
+            set: {
+              diskPath: relativeDiskPath,
+              thumbDiskPath: relativeThumbPath,
+              sizeBytes: file.size,
+              mimeType: file.mimetype || 'image/jpeg',
+              caption: String(caption || ''),
+              deletedAt: null,
+            },
+          })
+          .returning();
 
-      res.json(saved);
+        res.json(saved);
+      } catch (error: unknown) {
+        console.error('Photo upload failed:', error);
+        res.status(500).json({ error: 'Failed to store photo on disk.' });
+      }
+    }
+  );
+
+  app.get('/api/photos/:clientId/thumb', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const [photo] = await db
+        .select()
+        .from(photos)
+        .where(and(eq(photos.clientId, clientId), eq(photos.userId, userId)))
+        .limit(1);
+
+      if (!photo || photo.deletedAt) {
+        return res.status(404).json({ error: 'Photo not found.' });
+      }
+
+      const thumbPath = photo.thumbDiskPath ? resolveSafeUploadPath(photo.thumbDiskPath) : null;
+      if (thumbPath && fs.existsSync(thumbPath)) {
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'private, max-age=31536000');
+        fs.createReadStream(thumbPath).pipe(res);
+        return;
+      }
+
+      const fullPath = resolveSafeUploadPath(photo.diskPath);
+      if (!fullPath || !fs.existsSync(fullPath)) {
+        return res.status(404).json({ error: 'Photo file missing on disk.' });
+      }
+
+      res.setHeader('Content-Type', photo.mimeType || 'image/jpeg');
+      res.setHeader('Cache-Control', 'private, max-age=31536000');
+      fs.createReadStream(fullPath).pipe(res);
     } catch (error: unknown) {
-      console.error('Photo upload failed:', error);
-      res.status(500).json({ error: 'Failed to store photo on disk.' });
+      console.error('Photo thumbnail download failed:', error);
+      res.status(500).json({ error: 'Failed to stream photo thumbnail.' });
     }
   });
 
@@ -673,6 +731,13 @@ async function startServer() {
       const fullPath = resolveSafeUploadPath(photo.diskPath);
       if (fullPath && fs.existsSync(fullPath)) {
         fs.unlinkSync(fullPath);
+      }
+
+      if (photo.thumbDiskPath) {
+        const thumbPath = resolveSafeUploadPath(photo.thumbDiskPath);
+        if (thumbPath && fs.existsSync(thumbPath)) {
+          fs.unlinkSync(thumbPath);
+        }
       }
 
       res.json({ deleted: true, clientId });

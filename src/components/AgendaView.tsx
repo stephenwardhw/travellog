@@ -8,22 +8,27 @@ interface AgendaViewProps {
   photosByEvent: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
   onSelectEvent: (event: EventRecord) => void;
+  onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   onAddStop: (defaultDate?: string) => void;
   onOpenCsvImport: () => void;
 }
 
-const LocalThumb: React.FC<{ photo: PhotoRecord }> = ({ photo }) => {
+const LocalThumb: React.FC<{
+  photo: PhotoRecord;
+  onClick?: (e: React.MouseEvent) => void;
+}> = ({ photo, onClick }) => {
   const [url, setUrl] = useState<string | null>(null);
+  const sourceBlob = photo.thumbBlob || photo.blob;
 
   useEffect(() => {
-    if (!photo.blob) {
+    if (!sourceBlob) {
       setUrl(null);
       return;
     }
-    const objectUrl = URL.createObjectURL(photo.blob);
+    const objectUrl = URL.createObjectURL(sourceBlob);
     setUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
-  }, [photo.blob]);
+  }, [sourceBlob]);
 
   if (!url) {
     return (
@@ -34,11 +39,18 @@ const LocalThumb: React.FC<{ photo: PhotoRecord }> = ({ photo }) => {
   }
 
   return (
-    <img
-      src={url}
-      alt={photo.caption || photo.filename}
-      className="w-12 h-12 rounded-lg object-cover border border-slate-200 shrink-0"
-    />
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`View full photo ${photo.filename}`}
+      className="w-12 h-12 rounded-lg overflow-hidden border border-slate-200 shrink-0 cursor-zoom-in hover:ring-2 hover:ring-teal-700/40 transition-all"
+    >
+      <img
+        src={url}
+        alt={photo.caption || photo.filename}
+        className="w-full h-full object-cover"
+      />
+    </button>
   );
 };
 
@@ -60,6 +72,7 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   photosByEvent,
   pdfsByEvent,
   onSelectEvent,
+  onOpenPhoto,
   onAddStop,
   onOpenCsvImport,
 }) => {
@@ -258,11 +271,18 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                       evPdfs.some((p) => p.syncStatus === 'pending');
 
                     return (
-                      <button
+                      <div
                         key={ev.clientId}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => onSelectEvent(ev)}
-                        className="w-full text-left p-4 sm:p-5 hover:bg-slate-50/80 transition-colors flex items-start justify-between gap-4 min-h-[64px]"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            onSelectEvent(ev);
+                          }
+                        }}
+                        className="w-full text-left p-4 sm:p-5 hover:bg-slate-50/80 transition-colors flex items-start justify-between gap-4 min-h-[64px] cursor-pointer"
                       >
                         <div className="min-w-0 flex-1 space-y-1.5">
                           <div className="flex items-center gap-2 text-xs text-slate-500 tabular-nums flex-wrap">
@@ -316,8 +336,15 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
 
                           {evPhotos.length > 0 && (
                             <div className="flex items-center gap-2 pt-1.5">
-                              {evPhotos.slice(0, 4).map((photo) => (
-                                <LocalThumb key={photo.clientId} photo={photo} />
+                              {evPhotos.slice(0, 4).map((photo, idx) => (
+                                <LocalThumb
+                                  key={photo.clientId}
+                                  photo={photo}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpenPhoto(evPhotos, idx, ev.location);
+                                  }}
+                                />
                               ))}
                               {evPhotos.length > 4 && (
                                 <span className="text-xs font-medium text-slate-500 pl-1 tabular-nums">
@@ -329,7 +356,7 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                         </div>
 
                         <ChevronRight className="w-5 h-5 text-slate-400 shrink-0 mt-1" />
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
