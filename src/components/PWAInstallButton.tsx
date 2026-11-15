@@ -3,7 +3,15 @@ import { Download, WifiOff, X } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { useNetworkStatus } from '../lib/network';
 
-export const PWAInstallButton: React.FC = () => {
+interface PWAInstallButtonProps {
+  variant?: 'button' | 'menu-item';
+  onComplete?: () => void;
+}
+
+export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
+  variant = 'button',
+  onComplete,
+}) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
@@ -11,14 +19,22 @@ export const PWAInstallButton: React.FC = () => {
     return null;
   }
 
+  const buttonClass =
+    variant === 'menu-item'
+      ? 'w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors'
+      : 'inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 min-h-[40px]';
+
   if (isInstallable) {
     return (
       <button
         type="button"
-        onClick={install}
-        className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+        onClick={async () => {
+          await install();
+          onComplete?.();
+        }}
+        className={buttonClass}
       >
-        <Download className="w-3.5 h-3.5 text-teal-700" />
+        <Download className="w-3.5 h-3.5 text-teal-700 shrink-0" />
         Install App
       </button>
     );
@@ -30,9 +46,9 @@ export const PWAInstallButton: React.FC = () => {
         <button
           type="button"
           onClick={() => setShowIOSGuide(true)}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 min-h-[40px]"
+          className={buttonClass}
         >
-          <Download className="w-3.5 h-3.5 text-teal-700" />
+          <Download className="w-3.5 h-3.5 text-teal-700 shrink-0" />
           Install on iOS
         </button>
 
@@ -45,7 +61,10 @@ export const PWAInstallButton: React.FC = () => {
                 </h3>
                 <button
                   type="button"
-                  onClick={() => setShowIOSGuide(false)}
+                  onClick={() => {
+                    setShowIOSGuide(false);
+                    onComplete?.();
+                  }}
                   className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
                   aria-label="Close install guide"
                 >
@@ -59,7 +78,10 @@ export const PWAInstallButton: React.FC = () => {
               </p>
               <button
                 type="button"
-                onClick={() => setShowIOSGuide(false)}
+                onClick={() => {
+                  setShowIOSGuide(false);
+                  onComplete?.();
+                }}
                 className="mt-5 w-full rounded-lg bg-slate-900 py-2.5 text-sm font-medium text-white hover:bg-slate-800 transition-colors"
               >
                 Got it

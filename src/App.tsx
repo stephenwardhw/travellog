@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Calendar as CalendarIcon,
+  ChevronDown,
   Edit3,
   FileSpreadsheet,
   ListTodo,
@@ -69,6 +70,8 @@ export default function App() {
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<EventRecord | null>(null);
@@ -84,6 +87,28 @@ export default function App() {
   } | null>(null);
 
   const network = useNetworkStatus();
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+        setMobileMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [mobileMenuOpen]);
 
   const loadFromLocalDb = useCallback(async () => {
     const [allTrips, allEvents, allPhotos, allPdfs, queue, savedTripId, savedWifiOnly, savedSyncAt] =
@@ -750,7 +775,226 @@ export default function App() {
 
       {/* Workspace Toolbar */}
       <section className="border-b border-slate-200 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        {/* Mobile Single-Line Toolbar + Actions Dropdown */}
+        <div className="lg:hidden max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-2">
+          <select
+            aria-label="Active trip"
+            value={activeTrip?.clientId || ''}
+            onChange={(e) => selectActiveTrip(e.target.value)}
+            disabled={trips.length === 0}
+            className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-900 focus:border-teal-700 focus:outline-none min-h-[40px]"
+          >
+            {trips.length === 0 ? (
+              <option value="">No trips created yet</option>
+            ) : (
+              trips.map((t) => (
+                <option key={t.clientId} value={t.clientId}>
+                  {t.title}
+                  {t.accessRole === 'view'
+                    ? ' (Shared · View)'
+                    : t.accessRole === 'edit'
+                    ? ' (Shared · Edit)'
+                    : ''}
+                </option>
+              ))
+            )}
+          </select>
+
+          <button
+            type="button"
+            onClick={() => triggerSync()}
+            disabled={isSyncing || !network.isOnline}
+            aria-label={
+              isSyncing
+                ? 'Syncing'
+                : pendingCount > 0
+                ? `Sync ${pendingCount} pending changes`
+                : 'Sync now'
+            }
+            className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 shrink-0 min-h-[40px] min-w-[40px] tabular-nums"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            {pendingCount > 0 && <span>{pendingCount}</span>}
+          </button>
+
+          <div ref={mobileMenuRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              aria-expanded={mobileMenuOpen}
+              aria-haspopup="menu"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
+            >
+              <span>Actions</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-slate-500 transition-transform ${
+                  mobileMenuOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {mobileMenuOpen && (
+              <div
+                role="menu"
+                aria-label="Trip and sync actions"
+                className="absolute right-0 mt-1.5 w-60 rounded-xl border border-slate-200 bg-white shadow-lg py-1.5 z-40"
+              >
+                <div className="px-3.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Trip
+                </div>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setEditingTrip(null);
+                    setTripModalOpen(true);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <Plus className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                  New Trip
+                </button>
+
+                {activeTrip && isActiveTripOwner && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setShareModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    Share Trip
+                  </button>
+                )}
+
+                {activeTrip && canEditActiveTrip && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setEditingTrip(activeTrip);
+                      setTripModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    Edit Trip
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setCsvModalOpen(true);
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                  Import CSV
+                </button>
+
+                {activeTrip && isActiveTripOwner && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleDeleteTrip(activeTrip);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-red-600 hover:bg-red-50"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    Delete Trip
+                  </button>
+                )}
+
+                <div className="my-1 border-t border-slate-100" />
+                <div className="px-3.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Sync & Account
+                </div>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    toggleWifiOnly();
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <span className="flex items-center gap-2.5">
+                    {network.isOnline ? (
+                      <Wifi className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    ) : (
+                      <WifiOff className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                    )}
+                    Wi-Fi Only Sync
+                  </span>
+                  <span
+                    className={`text-[11px] font-semibold ${
+                      wifiOnlySync ? 'text-teal-700' : 'text-slate-400'
+                    }`}
+                  >
+                    {wifiOnlySync ? 'On' : 'Off'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={isSyncing || !network.isOnline}
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    triggerSync();
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${isSyncing ? 'animate-spin' : ''}`} />
+                  {isSyncing
+                    ? 'Syncing...'
+                    : pendingCount > 0
+                    ? `Sync Now (${pendingCount})`
+                    : 'Sync Now'}
+                </button>
+
+                <PWAInstallButton
+                  variant="menu-item"
+                  onComplete={() => setMobileMenuOpen(false)}
+                />
+
+                <div className="my-1 border-t border-slate-100" />
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    handleSignOut();
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-left text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+                >
+                  <span className="flex items-center gap-2.5">
+                    <LogOut className="w-3.5 h-3.5 shrink-0" />
+                    Sign out
+                  </span>
+                  <span className="text-[10px] text-slate-400 truncate max-w-[110px]">
+                    {session.user.email}
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Desktop Full Toolbar */}
+        <div className="hidden lg:flex max-w-7xl mx-auto px-6 py-3 items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2.5">
             <select
               aria-label="Active trip"
