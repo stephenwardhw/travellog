@@ -14,8 +14,8 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png'],
         manifest: {
           id: '/',
-          name: 'Fieldlog — Offline Travel Journal',
-          short_name: 'Fieldlog',
+          name: 'TravelLog — Offline Travel Journal',
+          short_name: 'TravelLog',
           description:
             'Offline-first travel journal with CSV itinerary import, CARTO map, calendar, agenda, Wi-Fi media sync, and searchable PDF attachments.',
           theme_color: '#0F766E',

@@ -732,7 +732,7 @@ export default function App() {
             }}
             className="font-display text-lg font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
           >
-            Fieldlog
+            TravelLog
           </a>
 
           <nav className="hidden md:flex items-center gap-6 text-sm font-medium">

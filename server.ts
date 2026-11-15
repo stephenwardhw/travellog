@@ -1172,11 +1172,11 @@ if (globalThis.customElements && !globalThis.customElements.get("vite-error-over
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Fieldlog server listening on http://0.0.0.0:${PORT}`);
+    console.log(`TravelLog server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start Fieldlog server:', err);
+  console.error('Failed to start TravelLog server:', err);
   process.exit(1);
 });

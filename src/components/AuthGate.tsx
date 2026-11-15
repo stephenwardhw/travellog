@@ -60,7 +60,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
       <header className="border-b border-slate-200 bg-white">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-8">
           <span className="font-display text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-            Fieldlog
+            TravelLog
           </span>
           <div className="flex items-center gap-3 shrink-0">
             <PWAInstallButton />
@@ -115,7 +115,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
                 )}
               </div>
               <h2 className="font-display text-2xl font-semibold text-slate-900">
-                {needsSetup ? 'Create Administrator Account' : 'Sign in to Fieldlog'}
+                {needsSetup ? 'Create Administrator Account' : 'Sign in to TravelLog'}
               </h2>
               <p className="text-xs text-slate-500">
                 {needsSetup
