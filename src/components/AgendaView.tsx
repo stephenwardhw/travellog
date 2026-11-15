@@ -7,6 +7,7 @@ interface AgendaViewProps {
   events: EventRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
+  canEdit: boolean;
   onSelectEvent: (event: EventRecord) => void;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   onAddStop: (defaultDate?: string) => void;
@@ -71,6 +72,7 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   events,
   photosByEvent,
   pdfsByEvent,
+  canEdit,
   onSelectEvent,
   onOpenPhoto,
   onAddStop,
@@ -195,14 +197,16 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => onAddStop(trip.startDate)}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 whitespace-nowrap shrink-0 min-h-[40px]"
-          >
-            <CalendarPlus className="w-3.5 h-3.5" />
-            Add Stop
-          </button>
+          {canEdit && (
+            <button
+              type="button"
+              onClick={() => onAddStop(trip.startDate)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 whitespace-nowrap shrink-0 min-h-[40px]"
+            >
+              <CalendarPlus className="w-3.5 h-3.5" />
+              Add Stop
+            </button>
+          )}
         </div>
       </div>
 
@@ -212,25 +216,28 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
             No stops planned for {trip.title}
           </h3>
           <p className="mt-1.5 text-sm text-slate-600 max-w-md mx-auto">
-            Add your first stop manually or import a CSV itinerary with dates, locations, and
-            coordinates.
+            {canEdit
+              ? 'Add your first stop manually or import a CSV itinerary with dates, locations, and coordinates.'
+              : 'This shared trip does not have any itinerary stops yet.'}
           </p>
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => onAddStop(trip.startDate)}
-              className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 min-h-[44px]"
-            >
-              Add First Stop
-            </button>
-            <button
-              type="button"
-              onClick={onOpenCsvImport}
-              className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 min-h-[44px]"
-            >
-              Import CSV
-            </button>
-          </div>
+          {canEdit && (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => onAddStop(trip.startDate)}
+                className="rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 min-h-[44px]"
+              >
+                Add First Stop
+              </button>
+              <button
+                type="button"
+                onClick={onOpenCsvImport}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 min-h-[44px]"
+              >
+                Import CSV
+              </button>
+            </div>
+          )}
         </div>
       ) : grouped.length === 0 ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-600">
@@ -252,13 +259,15 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                       <span className="ml-2 text-xs font-normal text-slate-400">· Past</span>
                     )}
                   </h3>
-                  <button
-                    type="button"
-                    onClick={() => onAddStop(dateStr)}
-                    className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
-                  >
-                    + Add on this day
-                  </button>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => onAddStop(dateStr)}
+                      className="text-xs font-medium text-teal-700 hover:text-teal-800 whitespace-nowrap"
+                    >
+                      + Add on this day
+                    </button>
+                  )}
                 </div>
 
                 <div className="rounded-2xl border border-slate-200 bg-white divide-y divide-slate-100 overflow-hidden">

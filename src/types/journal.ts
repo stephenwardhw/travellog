@@ -1,3 +1,5 @@
+export type TripAccessRole = 'owner' | 'edit' | 'view';
+
 export interface TripRecord {
   clientId: string;
   title: string;
@@ -8,7 +10,26 @@ export interface TripRecord {
   updatedAt: string;
   createdAt: string;
   deletedAt: string | null;
+  accessRole?: TripAccessRole;
+  ownerName?: string;
+  ownerEmail?: string;
   syncStatus?: 'synced' | 'pending';
+}
+
+export interface TripShareRecord {
+  id: number;
+  userId: number;
+  email: string;
+  name: string;
+  permission: 'view' | 'edit';
+  createdAt: string;
+}
+
+export interface ShareableUser {
+  id: number;
+  uid: string;
+  email: string;
+  name: string;
 }
 
 export interface EventRecord {

@@ -68,6 +68,12 @@ export const offlineDb = {
     return (items as TripRecord[]).filter((t) => !t.deletedAt);
   },
 
+  async getAllTripsRaw(): Promise<TripRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('trips', 'readonly');
+    return reqToPromise(tx.objectStore('trips').getAll());
+  },
+
   async getTripRaw(clientId: string): Promise<TripRecord | undefined> {
     const db = await openDb();
     const tx = db.transaction('trips', 'readonly');
@@ -81,11 +87,24 @@ export const offlineDb = {
     await txDone(tx);
   },
 
+  async deleteTrip(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('trips', 'readwrite');
+    tx.objectStore('trips').delete(clientId);
+    await txDone(tx);
+  },
+
   async getAllEvents(): Promise<EventRecord[]> {
     const db = await openDb();
     const tx = db.transaction('events', 'readonly');
     const items = await reqToPromise(tx.objectStore('events').getAll());
     return (items as EventRecord[]).filter((e) => !e.deletedAt);
+  },
+
+  async getAllEventsRaw(): Promise<EventRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('events', 'readonly');
+    return reqToPromise(tx.objectStore('events').getAll());
   },
 
   async getEventRaw(clientId: string): Promise<EventRecord | undefined> {
@@ -101,11 +120,24 @@ export const offlineDb = {
     await txDone(tx);
   },
 
+  async deleteEvent(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('events', 'readwrite');
+    tx.objectStore('events').delete(clientId);
+    await txDone(tx);
+  },
+
   async getAllPhotos(): Promise<PhotoRecord[]> {
     const db = await openDb();
     const tx = db.transaction('photos', 'readonly');
     const items = await reqToPromise(tx.objectStore('photos').getAll());
     return (items as PhotoRecord[]).filter((p) => !p.deletedAt);
+  },
+
+  async getAllPhotosRaw(): Promise<PhotoRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('photos', 'readonly');
+    return reqToPromise(tx.objectStore('photos').getAll());
   },
 
   async getPhotoRaw(clientId: string): Promise<PhotoRecord | undefined> {
@@ -121,11 +153,24 @@ export const offlineDb = {
     await txDone(tx);
   },
 
+  async deletePhoto(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('photos', 'readwrite');
+    tx.objectStore('photos').delete(clientId);
+    await txDone(tx);
+  },
+
   async getAllPdfs(): Promise<PdfRecord[]> {
     const db = await openDb();
     const tx = db.transaction('pdfs', 'readonly');
     const items = await reqToPromise(tx.objectStore('pdfs').getAll());
     return (items as PdfRecord[]).filter((p) => !p.deletedAt);
+  },
+
+  async getAllPdfsRaw(): Promise<PdfRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('pdfs', 'readonly');
+    return reqToPromise(tx.objectStore('pdfs').getAll());
   },
 
   async getPdfRaw(clientId: string): Promise<PdfRecord | undefined> {
@@ -138,6 +183,13 @@ export const offlineDb = {
     const db = await openDb();
     const tx = db.transaction('pdfs', 'readwrite');
     tx.objectStore('pdfs').put(pdf);
+    await txDone(tx);
+  },
+
+  async deletePdf(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('pdfs', 'readwrite');
+    tx.objectStore('pdfs').delete(clientId);
     await txDone(tx);
   },
 

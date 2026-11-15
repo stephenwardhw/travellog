@@ -22,10 +22,21 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
   onClose,
   onImport,
 }) => {
-  const [csvText, setCsvText] = useState('');
-  const [targetTrip, setTargetTrip] = useState<string>(
-    activeTripClientId || (trips[0]?.clientId ?? 'new')
+  const editableTrips = useMemo(
+    () =>
+      trips.filter(
+        (t) => !t.accessRole || t.accessRole === 'owner' || t.accessRole === 'edit'
+      ),
+    [trips]
   );
+
+  const [csvText, setCsvText] = useState('');
+  const [targetTrip, setTargetTrip] = useState<string>(() => {
+    if (activeTripClientId && editableTrips.some((t) => t.clientId === activeTripClientId)) {
+      return activeTripClientId;
+    }
+    return editableTrips[0]?.clientId ?? 'new';
+  });
   const [newTripTitle, setNewTripTitle] = useState('Imported Itinerary');
   const [importing, setImporting] = useState(false);
 
@@ -51,7 +62,8 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
     setImporting(true);
     try {
       await onImport({
-        targetTripClientId: targetTrip === 'new' || trips.length === 0 ? 'new' : targetTrip,
+        targetTripClientId:
+          targetTrip === 'new' || editableTrips.length === 0 ? 'new' : targetTrip,
         newTripTitle: newTripTitle.trim() || 'Imported Trip',
         rows: parsed.rows,
       });
@@ -91,11 +103,11 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
                 Destination Trip
               </label>
               <select
-                value={trips.length === 0 ? 'new' : targetTrip}
+                value={editableTrips.length === 0 ? 'new' : targetTrip}
                 onChange={(e) => setTargetTrip(e.target.value)}
                 className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none"
               >
-                {trips.map((t) => (
+                {editableTrips.map((t) => (
                   <option key={t.clientId} value={t.clientId}>
                     {t.title} ({t.startDate})
                   </option>
@@ -104,7 +116,7 @@ export const CsvImportModal: React.FC<CsvImportModalProps> = ({
               </select>
             </div>
 
-            {(targetTrip === 'new' || trips.length === 0) && (
+            {(targetTrip === 'new' || editableTrips.length === 0) && (
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1.5">
                   New Trip Title

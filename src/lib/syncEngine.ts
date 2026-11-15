@@ -37,6 +37,20 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
         }
       };
 
+      let permissionErrorNotice: string | undefined;
+      const checkResponse = async (res: Response, queueItemId: number, label: string): Promise<boolean> => {
+        assertAuthorized(res);
+        if (res.status === 403) {
+          await offlineDb.removeQueueItem(queueItemId);
+          permissionErrorNotice = `Some changes to a shared trip were discarded because you only have view access.`;
+          return false;
+        }
+        if (!res.ok) {
+          throw new Error(`Failed to sync ${label} (${res.status})`);
+        }
+        return true;
+      };
+
       // 1. Push pending local mutations in FIFO order
       const queue = await offlineDb.getQueue();
       for (const item of queue) {
@@ -53,8 +67,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             headers: { ...authHeaders, 'Content-Type': 'application/json' },
             body: JSON.stringify(trip),
           });
-          assertAuthorized(res);
-          if (!res.ok) throw new Error(`Failed to sync trip (${res.status})`);
+          if (!(await checkResponse(res, item.id, 'trip'))) continue;
           await offlineDb.putTrip({ ...trip, syncStatus: 'synced' });
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
@@ -63,10 +76,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             method: 'DELETE',
             headers: authHeaders,
           });
-          assertAuthorized(res);
-          if (!res.ok && res.status !== 404) {
-            throw new Error(`Failed to delete trip (${res.status})`);
-          }
+          if (res.status !== 404 && !(await checkResponse(res, item.id, 'trip deletion'))) continue;
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
         } else if (item.type === 'event_upsert') {
@@ -80,8 +90,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             headers: { ...authHeaders, 'Content-Type': 'application/json' },
             body: JSON.stringify(event),
           });
-          assertAuthorized(res);
-          if (!res.ok) throw new Error(`Failed to sync stop (${res.status})`);
+          if (!(await checkResponse(res, item.id, 'stop'))) continue;
           await offlineDb.putEvent({ ...event, syncStatus: 'synced' });
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
@@ -90,10 +99,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             method: 'DELETE',
             headers: authHeaders,
           });
-          assertAuthorized(res);
-          if (!res.ok && res.status !== 404) {
-            throw new Error(`Failed to delete stop (${res.status})`);
-          }
+          if (res.status !== 404 && !(await checkResponse(res, item.id, 'stop deletion'))) continue;
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
         } else if (item.type === 'photo_upload') {
@@ -116,8 +122,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             headers: authHeaders,
             body: form,
           });
-          assertAuthorized(res);
-          if (!res.ok) throw new Error(`Failed to upload photo (${res.status})`);
+          if (!(await checkResponse(res, item.id, 'photo'))) continue;
           const savedMeta = await res.json();
           await offlineDb.putPhoto({
             ...photo,
@@ -133,10 +138,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             method: 'DELETE',
             headers: authHeaders,
           });
-          assertAuthorized(res);
-          if (!res.ok && res.status !== 404) {
-            throw new Error(`Failed to delete photo (${res.status})`);
-          }
+          if (res.status !== 404 && !(await checkResponse(res, item.id, 'photo deletion'))) continue;
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
         } else if (item.type === 'pdf_upload') {
@@ -156,8 +158,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             headers: authHeaders,
             body: form,
           });
-          assertAuthorized(res);
-          if (!res.ok) throw new Error(`Failed to upload PDF (${res.status})`);
+          if (!(await checkResponse(res, item.id, 'PDF'))) continue;
           const savedMeta = await res.json();
           await offlineDb.putPdf({
             ...pdf,
@@ -172,10 +173,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             method: 'DELETE',
             headers: authHeaders,
           });
-          assertAuthorized(res);
-          if (!res.ok && res.status !== 404) {
-            throw new Error(`Failed to delete PDF (${res.status})`);
-          }
+          if (res.status !== 404 && !(await checkResponse(res, item.id, 'PDF deletion'))) continue;
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
         }
@@ -198,6 +196,11 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
       const remainingQueue = await offlineDb.getQueue();
       const pendingIds = new Set(remainingQueue.map((q) => q.clientId));
 
+      const remoteTripIds = new Set(payload.trips.map((t) => t.clientId));
+      const remoteEventIds = new Set(payload.events.map((e) => e.clientId));
+      const remotePhotoIds = new Set(payload.photos.map((p) => p.clientId));
+      const remotePdfIds = new Set(payload.pdfs.map((p) => p.clientId));
+
       for (const remoteTrip of payload.trips) {
         if (pendingIds.has(remoteTrip.clientId)) continue;
         await offlineDb.putTrip({
@@ -210,6 +213,9 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           updatedAt: remoteTrip.updatedAt,
           createdAt: remoteTrip.createdAt,
           deletedAt: remoteTrip.deletedAt,
+          accessRole: remoteTrip.accessRole || 'owner',
+          ownerName: remoteTrip.ownerName || '',
+          ownerEmail: remoteTrip.ownerEmail || '',
           syncStatus: 'synced',
         });
       }
@@ -339,12 +345,42 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
         });
       }
 
+      // Remove local synced items that are no longer accessible (e.g., revoked shares)
+      const [localTrips, localEvents, localPhotos, localPdfs] = await Promise.all([
+        offlineDb.getAllTripsRaw(),
+        offlineDb.getAllEventsRaw(),
+        offlineDb.getAllPhotosRaw(),
+        offlineDb.getAllPdfsRaw(),
+      ]);
+
+      for (const t of localTrips) {
+        if (!pendingIds.has(t.clientId) && !remoteTripIds.has(t.clientId)) {
+          await offlineDb.deleteTrip(t.clientId);
+        }
+      }
+      for (const ev of localEvents) {
+        if (!pendingIds.has(ev.clientId) && !remoteEventIds.has(ev.clientId)) {
+          await offlineDb.deleteEvent(ev.clientId);
+        }
+      }
+      for (const ph of localPhotos) {
+        if (!pendingIds.has(ph.clientId) && !remotePhotoIds.has(ph.clientId)) {
+          await offlineDb.deletePhoto(ph.clientId);
+        }
+      }
+      for (const pd of localPdfs) {
+        if (!pendingIds.has(pd.clientId) && !remotePdfIds.has(pd.clientId)) {
+          await offlineDb.deletePdf(pd.clientId);
+        }
+      }
+
       await offlineDb.setMeta('lastSyncAt', new Date().toISOString());
 
       return {
         status: 'synced',
         pushedCount,
         downloadedMediaCount,
+        errorMessage: permissionErrorNotice,
       };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Sync failed';

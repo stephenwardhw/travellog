@@ -42,13 +42,16 @@ interface EventDetailDrawerProps {
   ) => Promise<void>;
   onDeletePdf: (clientId: string) => Promise<void>;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
+  readOnly?: boolean;
+  ownerLabel?: string;
 }
 
 const PhotoCard: React.FC<{
   photo: PhotoRecord;
+  readOnly?: boolean;
   onOpen: () => void;
   onDelete: () => void;
-}> = ({ photo, onOpen, onDelete }) => {
+}> = ({ photo, readOnly, onOpen, onDelete }) => {
   const [url, setUrl] = useState<string | null>(null);
   const displayBlob = photo.thumbBlob || photo.blob;
 
@@ -87,17 +90,19 @@ const PhotoCard: React.FC<{
             <span>Waiting for Wi-Fi download</span>
           </div>
         )}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-slate-900/70 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
-          aria-label={`Delete ${photo.filename}`}
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-slate-900/70 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
+            aria-label={`Delete ${photo.filename}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
       <div className="px-2.5 py-2 flex items-center justify-between gap-2 text-[11px] text-slate-600">
         <span className="truncate">{photo.filename}</span>
@@ -124,6 +129,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   onAddPdfs,
   onDeletePdf,
   onOpenPhoto,
+  readOnly = false,
+  ownerLabel,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [location, setLocation] = useState('');
@@ -274,14 +281,18 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
         <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-xs text-slate-500">
-              {event ? 'Edit Stop & Daily Journal' : 'New Itinerary Stop'}
+              {readOnly
+                ? 'Shared Stop & Daily Journal (View only)'
+                : event
+                ? 'Edit Stop & Daily Journal'
+                : 'New Itinerary Stop'}
             </p>
             <h2 className="font-display text-xl font-semibold text-slate-900 truncate">
               {location || 'Untitled Stop'}
             </h2>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {event && (
+            {event && !readOnly && (
               <button
                 type="button"
                 onClick={async () => {
@@ -306,6 +317,13 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-6">
+          {readOnly && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
+              View-only access{ownerLabel ? ` · Shared by ${ownerLabel}` : ''}. You can read
+              journal notes, inspect high-resolution photos, and open PDFs.
+            </div>
+          )}
+
           {error && (
             <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">
               {error}
@@ -323,7 +341,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                 onChange={(e) => setLocation(e.target.value)}
                 placeholder="Arashiyama Bamboo Grove"
                 required
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
+                disabled={readOnly}
+                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 disabled:bg-slate-50 disabled:text-slate-700"
               />
             </div>
 
@@ -337,7 +356,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   value={eventDate}
                   onChange={(e) => setEventDate(e.target.value)}
                   required
-                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none"
+                  disabled={readOnly}
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
               <div>
@@ -348,7 +368,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   type="time"
                   value={eventTime}
                   onChange={(e) => setEventTime(e.target.value)}
-                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none"
+                  disabled={readOnly}
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
             </div>
@@ -358,15 +379,17 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                 <label className="text-xs font-medium text-slate-700">
                   Coordinates (optional)
                 </label>
-                <button
-                  type="button"
-                  onClick={handleUseGps}
-                  disabled={locatingGps}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
-                >
-                  <LocateFixed className="w-3.5 h-3.5" />
-                  {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
-                </button>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    onClick={handleUseGps}
+                    disabled={locatingGps}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
+                  >
+                    <LocateFixed className="w-3.5 h-3.5" />
+                    {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
+                  </button>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <input
@@ -375,7 +398,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   value={latitude}
                   onChange={(e) => setLatitude(e.target.value)}
                   placeholder="Latitude (e.g. 35.0168)"
-                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none"
+                  disabled={readOnly}
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
                 <input
                   type="number"
@@ -383,7 +407,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   value={longitude}
                   onChange={(e) => setLongitude(e.target.value)}
                   placeholder="Longitude (e.g. 135.6713)"
-                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none"
+                  disabled={readOnly}
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
             </div>
@@ -397,7 +422,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                 value={details}
                 onChange={(e) => setDetails(e.target.value)}
                 placeholder="Reservation numbers, transit routes, opening hours..."
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none"
+                disabled={readOnly}
+                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
               />
             </div>
           </div>
@@ -411,7 +437,8 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
               value={journalEntry}
               onChange={(e) => setJournalEntry(e.target.value)}
               placeholder="Write your reflections, highlights, meals, people you met, and impressions of the day..."
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm leading-relaxed text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
+              disabled={readOnly}
+              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm leading-relaxed text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 disabled:bg-slate-50 disabled:text-slate-700"
             />
           </div>
 
@@ -426,18 +453,20 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   Saved on server disk and synced across devices over Wi-Fi.
                 </p>
               </div>
-              <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
-                <Camera className="w-3.5 h-3.5 text-teal-700" />
-                {attachingPhotos ? 'Processing...' : 'Attach Photos'}
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handlePhotoUpload}
-                  className="hidden"
-                  disabled={attachingPhotos}
-                />
-              </label>
+              {!readOnly && (
+                <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
+                  <Camera className="w-3.5 h-3.5 text-teal-700" />
+                  {attachingPhotos ? 'Processing...' : 'Attach Photos'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handlePhotoUpload}
+                    className="hidden"
+                    disabled={attachingPhotos}
+                  />
+                </label>
+              )}
             </div>
 
             {photos.length > 0 && (
@@ -446,6 +475,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   <PhotoCard
                     key={photo.clientId}
                     photo={photo}
+                    readOnly={readOnly}
                     onOpen={() => onOpenPhoto(photos, idx, location || event?.location)}
                     onDelete={() => onDeletePhoto(photo.clientId)}
                   />
@@ -465,18 +495,20 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   Text is indexed automatically for offline & cross-trip search.
                 </p>
               </div>
-              <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
-                <Upload className="w-3.5 h-3.5 text-teal-700" />
-                {extractingPdf ? 'Indexing PDF...' : 'Attach PDF'}
-                <input
-                  type="file"
-                  accept="application/pdf,.pdf"
-                  multiple
-                  onChange={handlePdfUpload}
-                  className="hidden"
-                  disabled={extractingPdf}
-                />
-              </label>
+              {!readOnly && (
+                <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
+                  <Upload className="w-3.5 h-3.5 text-teal-700" />
+                  {extractingPdf ? 'Indexing PDF...' : 'Attach PDF'}
+                  <input
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    multiple
+                    onChange={handlePdfUpload}
+                    className="hidden"
+                    disabled={extractingPdf}
+                  />
+                </label>
+              )}
             </div>
 
             {pdfs.length > 0 && (
@@ -516,14 +548,16 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                       >
                         <ExternalLink className="w-4 h-4" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeletePdf(pdf.clientId)}
-                        className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-white"
-                        aria-label={`Delete ${pdf.filename}`}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {!readOnly && (
+                        <button
+                          type="button"
+                          onClick={() => onDeletePdf(pdf.clientId)}
+                          className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-white"
+                          aria-label={`Delete ${pdf.filename}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -533,21 +567,33 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
         </form>
 
         <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 min-h-[44px]"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={saving}
-            className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60 min-h-[44px]"
-          >
-            {saving ? 'Saving...' : 'Save Stop & Journal'}
-          </button>
+          {readOnly ? (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 min-h-[44px]"
+            >
+              Close
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onClose}
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-50 min-h-[44px]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={saving}
+                className="rounded-lg bg-teal-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-800 disabled:opacity-60 min-h-[44px]"
+              >
+                {saving ? 'Saving...' : 'Save Stop & Journal'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

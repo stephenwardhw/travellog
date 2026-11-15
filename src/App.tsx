@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Search as SearchIcon,
+  Share2,
   Trash2,
   Users,
   Wifi,
@@ -35,6 +36,7 @@ import { CartoMapView } from './components/CartoMapView';
 import { SearchView } from './components/SearchView';
 import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
+import { TripShareModal } from './components/TripShareModal';
 import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
 import { PhotoLightbox } from './components/PhotoLightbox';
@@ -65,6 +67,7 @@ export default function App() {
 
   const [tripModalOpen, setTripModalOpen] = useState(false);
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
   const [csvModalOpen, setCsvModalOpen] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -208,7 +211,7 @@ export default function App() {
         await loadFromLocalDb();
         if (result.status === 'paused-cellular') {
           setSyncNotice('Cellular connection detected — media & data sync paused until Wi-Fi.');
-        } else if (result.status === 'error' && result.errorMessage) {
+        } else if (result.errorMessage) {
           setSyncNotice(result.errorMessage);
         }
       } finally {
@@ -235,6 +238,19 @@ export default function App() {
   const activeTrip = useMemo(
     () => trips.find((t) => t.clientId === activeTripClientId) || trips[0] || null,
     [trips, activeTripClientId]
+  );
+
+  const activeTripRole = activeTrip?.accessRole || 'owner';
+  const isActiveTripOwner = !activeTrip || activeTripRole === 'owner';
+  const canEditActiveTrip = !activeTrip || activeTripRole === 'owner' || activeTripRole === 'edit';
+
+  const canEditTripById = useCallback(
+    (tripClientId: string) => {
+      const target = trips.find((t) => t.clientId === tripClientId);
+      const role = target?.accessRole || 'owner';
+      return role === 'owner' || role === 'edit';
+    },
+    [trips]
   );
 
   const activeTripEvents = useMemo(() => {
@@ -274,6 +290,10 @@ export default function App() {
     endDate: string;
     description: string;
   }) => {
+    if (editingTrip && editingTrip.accessRole === 'view') {
+      setSyncNotice('This shared trip is view-only and cannot be modified.');
+      return;
+    }
     const now = new Date().toISOString();
     const record: TripRecord = editingTrip
       ? {
@@ -285,6 +305,9 @@ export default function App() {
       : {
           clientId: makeId(),
           ...data,
+          accessRole: 'owner',
+          ownerName: session?.user.name || session?.user.email || '',
+          ownerEmail: session?.user.email || '',
           createdAt: now,
           updatedAt: now,
           deletedAt: null,
@@ -303,6 +326,10 @@ export default function App() {
   };
 
   const handleDeleteTrip = async (trip: TripRecord) => {
+    if (trip.accessRole && trip.accessRole !== 'owner') {
+      setSyncNotice('Only the trip owner can delete a trip.');
+      return;
+    }
     const now = new Date().toISOString();
     await offlineDb.putTrip({
       ...trip,
@@ -336,6 +363,9 @@ export default function App() {
         startDate: sortedDates[0] || now.slice(0, 10),
         endDate: sortedDates[sortedDates.length - 1] || now.slice(0, 10),
         description: `Imported from CSV (${opts.rows.length} stops)`,
+        accessRole: 'owner',
+        ownerName: session?.user.name || session?.user.email || '',
+        ownerEmail: session?.user.email || '',
         createdAt: now,
         updatedAt: now,
         deletedAt: null,
@@ -349,6 +379,8 @@ export default function App() {
       });
       targetTripId = newTrip.clientId;
       await selectActiveTrip(targetTripId);
+    } else if (!canEditTripById(targetTripId)) {
+      throw new Error('You do not have edit permission for the selected trip.');
     }
 
     for (const row of opts.rows) {
@@ -400,6 +432,9 @@ export default function App() {
         startDate: data.eventDate,
         endDate: data.eventDate,
         description: '',
+        accessRole: 'owner',
+        ownerName: session?.user.name || session?.user.email || '',
+        ownerEmail: session?.user.email || '',
         createdAt: now,
         updatedAt: now,
         deletedAt: null,
@@ -416,9 +451,13 @@ export default function App() {
     }
 
     const existing = data.clientId ? await offlineDb.getEventRaw(data.clientId) : undefined;
+    const effectiveTripId = existing?.tripClientId || tripId;
+    if (!canEditTripById(effectiveTripId) && activeTrip?.clientId === effectiveTripId && !canEditActiveTrip) {
+      throw new Error('This shared trip is view-only and cannot be edited.');
+    }
     const saved: EventRecord = {
       clientId: existing?.clientId || data.clientId || makeId(),
-      tripClientId: existing?.tripClientId || tripId,
+      tripClientId: effectiveTripId,
       eventDate: data.eventDate,
       eventTime: data.eventTime,
       location: data.location,
@@ -447,6 +486,7 @@ export default function App() {
   const handleDeleteEvent = async (clientId: string) => {
     const existing = await offlineDb.getEventRaw(clientId);
     if (!existing) return;
+    if (!canEditTripById(existing.tripClientId)) return;
     const now = new Date().toISOString();
     await offlineDb.putEvent({
       ...existing,
@@ -464,6 +504,7 @@ export default function App() {
   };
 
   const handleAssignCoordinates = async (event: EventRecord, lat: number, lng: number) => {
+    if (!canEditTripById(event.tripClientId)) return;
     const now = new Date().toISOString();
     const updated: EventRecord = {
       ...event,
@@ -611,6 +652,11 @@ export default function App() {
       setTripModalOpen(true);
       return;
     }
+    if (activeTrip && !canEditActiveTrip) {
+      setEditingTrip(null);
+      setTripModalOpen(true);
+      return;
+    }
     setSelectedEvent(null);
     setDrawerDefaultDate(defaultDate || activeTrip?.startDate);
     setDrawerDefaultCoords(coords || null);
@@ -640,6 +686,11 @@ export default function App() {
 
   const activeDrawerPhotos = selectedEvent ? photosByEvent.get(selectedEvent.clientId) || [] : [];
   const activeDrawerPdfs = selectedEvent ? pdfsByEvent.get(selectedEvent.clientId) || [] : [];
+  const drawerTrip = selectedEvent
+    ? trips.find((t) => t.clientId === selectedEvent.tripClientId) || activeTrip
+    : activeTrip;
+  const drawerReadOnly = (drawerTrip?.accessRole || 'owner') === 'view';
+  const drawerOwnerLabel = drawerTrip?.ownerName || drawerTrip?.ownerEmail || '';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col pb-20 md:pb-10">
@@ -691,7 +742,7 @@ export default function App() {
               className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 transition-colors whitespace-nowrap shrink-0 min-h-[38px]"
             >
               <Plus className="w-3.5 h-3.5" />
-              {activeTrip ? 'New Stop' : 'New Trip'}
+              {activeTrip && canEditActiveTrip ? 'New Stop' : 'New Trip'}
             </button>
           </div>
         </div>
@@ -714,6 +765,11 @@ export default function App() {
                 trips.map((t) => (
                   <option key={t.clientId} value={t.clientId}>
                     {t.title}
+                    {t.accessRole === 'view'
+                      ? ' (Shared · View)'
+                      : t.accessRole === 'edit'
+                      ? ' (Shared · Edit)'
+                      : ''}
                   </option>
                 ))
               )}
@@ -731,28 +787,40 @@ export default function App() {
               New Trip
             </button>
 
-            {activeTrip && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditingTrip(activeTrip);
-                    setTripModalOpen(true);
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
-                >
-                  <Edit3 className="w-3.5 h-3.5 text-slate-500" />
-                  Edit Trip
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteTrip(activeTrip)}
-                  className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500 hover:text-red-600 hover:bg-red-50 min-h-[40px] min-w-[40px]"
-                  aria-label="Delete active trip"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </>
+            {activeTrip && isActiveTripOwner && (
+              <button
+                type="button"
+                onClick={() => setShareModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
+              >
+                <Share2 className="w-3.5 h-3.5 text-teal-700" />
+                Share
+              </button>
+            )}
+
+            {activeTrip && canEditActiveTrip && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingTrip(activeTrip);
+                  setTripModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
+              >
+                <Edit3 className="w-3.5 h-3.5 text-slate-500" />
+                Edit Trip
+              </button>
+            )}
+
+            {activeTrip && isActiveTripOwner && (
+              <button
+                type="button"
+                onClick={() => handleDeleteTrip(activeTrip)}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500 hover:text-red-600 hover:bg-red-50 min-h-[40px] min-w-[40px]"
+                aria-label="Delete active trip"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
             )}
 
             <button
@@ -824,6 +892,15 @@ export default function App() {
                   <span>
                     {activeTrip.startDate} – {activeTrip.endDate}
                   </span>
+                  {activeTripRole !== 'owner' && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-teal-800 font-medium">
+                        Shared by {activeTrip.ownerName || activeTrip.ownerEmail || 'Owner'} ·{' '}
+                        {activeTripRole === 'edit' ? 'Can edit' : 'View only'}
+                      </span>
+                    </>
+                  )}
                   <span aria-hidden="true">·</span>
                   <span>{network.connectionType}</span>
                   {lastSyncAt && (
@@ -852,6 +929,7 @@ export default function App() {
             events={activeTripEvents}
             photosByEvent={photosByEvent}
             pdfsByEvent={pdfsByEvent}
+            canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
             onOpenPhoto={(list, index, title) =>
               setLightboxState({ photos: list, initialIndex: index, title })
@@ -865,6 +943,7 @@ export default function App() {
           <CalendarView
             trip={activeTrip}
             events={activeTripEvents}
+            canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
             onAddStop={(date) => openNewStop(date)}
           />
@@ -875,6 +954,7 @@ export default function App() {
             trip={activeTrip}
             events={activeTripEvents}
             photosByEvent={photosByEvent}
+            canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
             onAssignCoordinates={handleAssignCoordinates}
             onAddStopAtCoords={(lat, lng) => openNewStop(activeTrip?.startDate, { lat, lng })}
@@ -940,6 +1020,14 @@ export default function App() {
         onSave={handleSaveTrip}
       />
 
+      <TripShareModal
+        open={shareModalOpen}
+        trip={activeTrip}
+        token={session.token}
+        onUnauthorized={handleSignOut}
+        onClose={() => setShareModalOpen(false)}
+      />
+
       <CsvImportModal
         open={csvModalOpen}
         trips={trips}
@@ -955,6 +1043,8 @@ export default function App() {
         defaultCoords={drawerDefaultCoords}
         photos={activeDrawerPhotos}
         pdfs={activeDrawerPdfs}
+        readOnly={drawerReadOnly}
+        ownerLabel={drawerOwnerLabel}
         onClose={() => setDrawerOpen(false)}
         onSaveEvent={handleSaveEvent}
         onDeleteEvent={handleDeleteEvent}

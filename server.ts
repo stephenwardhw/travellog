@@ -3,9 +3,9 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
-import { events, pdfs, photos, trips } from './src/db/schema.ts';
+import { events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
 import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
 import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
 import {
@@ -18,6 +18,14 @@ import {
   listUsers,
   updateLocalUser,
 } from './src/db/users.ts';
+import {
+  getAccessibleTripsForUser,
+  getEventAccessByClientId,
+  getTripAccessByClientId,
+  getTripAccessForTripRow,
+  listShareableUsers,
+  listTripShares,
+} from './src/db/tripAccess.ts';
 
 const PORT = Number(process.env.PORT) || 3000;
 const MAX_PHOTO_SIZE_MB = Math.max(1, Number(process.env.MAX_PHOTO_SIZE_MB) || 100);
@@ -352,21 +360,166 @@ async function startServer() {
     }
   });
 
+  app.get('/api/users/shareable', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const shareable = await listShareableUsers(req.dbUserId!);
+      res.json({ users: shareable });
+    } catch (error) {
+      console.error('List shareable users failed:', error);
+      res.status(500).json({ error: 'Failed to load users.' });
+    }
+  });
+
+  app.get('/api/trips/:clientId/shares', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const access = await getTripAccessByClientId(clientId, userId);
+
+      if (!access) {
+        return res.status(404).json({ error: 'Trip not found.' });
+      }
+      if (access.role !== 'owner') {
+        return res.status(403).json({ error: 'Only the trip owner can manage sharing.' });
+      }
+
+      const shares = await listTripShares(access.trip.id);
+      res.json({ shares });
+    } catch (error) {
+      console.error('Load trip shares failed:', error);
+      res.status(500).json({ error: 'Failed to load trip sharing settings.' });
+    }
+  });
+
+  app.post('/api/trips/:clientId/shares', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const access = await getTripAccessByClientId(clientId, userId);
+
+      if (!access) {
+        return res.status(404).json({ error: 'Trip not found.' });
+      }
+      if (access.role !== 'owner') {
+        return res.status(403).json({ error: 'Only the trip owner can share this trip.' });
+      }
+
+      const { targetUserId, email, permission } = req.body || {};
+      const cleanPerm: 'view' | 'edit' = permission === 'edit' ? 'edit' : 'view';
+
+      let targetUser = null;
+      if (targetUserId !== undefined && targetUserId !== null) {
+        const parsedId = Number(targetUserId);
+        if (Number.isInteger(parsedId) && parsedId > 0) {
+          targetUser = await findUserById(parsedId);
+        }
+      } else if (typeof email === 'string' && email.trim()) {
+        const found = await findUserByEmail(email);
+        if (found) {
+          targetUser = {
+            id: found.id,
+            uid: found.uid,
+            email: found.email,
+            name: found.name,
+            role: found.role,
+            createdAt: found.createdAt,
+          };
+        }
+      }
+
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User account not found.' });
+      }
+      if (targetUser.id === userId) {
+        return res.status(400).json({ error: 'You already own this trip.' });
+      }
+
+      const existingShare = await db
+        .select()
+        .from(tripShares)
+        .where(and(eq(tripShares.tripId, access.trip.id), eq(tripShares.userId, targetUser.id)))
+        .limit(1);
+
+      if (existingShare.length > 0) {
+        await db
+          .update(tripShares)
+          .set({ permission: cleanPerm })
+          .where(eq(tripShares.id, existingShare[0].id));
+      } else {
+        await db.insert(tripShares).values({
+          tripId: access.trip.id,
+          userId: targetUser.id,
+          permission: cleanPerm,
+        });
+      }
+
+      const shares = await listTripShares(access.trip.id);
+      res.json({ shares });
+    } catch (error) {
+      console.error('Save trip share failed:', error);
+      res.status(500).json({ error: 'Failed to update trip sharing.' });
+    }
+  });
+
+  app.delete(
+    '/api/trips/:clientId/shares/:targetUserId',
+    requireAuth,
+    async (req: AuthRequest, res) => {
+      try {
+        const userId = req.dbUserId!;
+        const clientId = String(req.params.clientId);
+        const targetUserId = Number(req.params.targetUserId);
+
+        if (!Number.isInteger(targetUserId) || targetUserId <= 0) {
+          return res.status(400).json({ error: 'Invalid user id.' });
+        }
+
+        const access = await getTripAccessByClientId(clientId, userId);
+        if (!access) {
+          return res.status(404).json({ error: 'Trip not found.' });
+        }
+        if (access.role !== 'owner') {
+          return res.status(403).json({ error: 'Only the trip owner can manage sharing.' });
+        }
+
+        await db
+          .delete(tripShares)
+          .where(and(eq(tripShares.tripId, access.trip.id), eq(tripShares.userId, targetUserId)));
+
+        const shares = await listTripShares(access.trip.id);
+        res.json({ shares });
+      } catch (error) {
+        console.error('Remove trip share failed:', error);
+        res.status(500).json({ error: 'Failed to remove user access.' });
+      }
+    }
+  );
+
   app.get('/api/sync', requireAuth, async (req: AuthRequest, res) => {
     try {
       const userId = req.dbUserId!;
-      const [userTrips, userEvents, userPhotos, userPdfs] = await Promise.all([
-        db.select().from(trips).where(eq(trips.userId, userId)),
-        db.select().from(events).where(eq(events.userId, userId)),
-        db.select().from(photos).where(eq(photos.userId, userId)),
-        db.select().from(pdfs).where(eq(pdfs.userId, userId)),
-      ]);
+      const accessibleTrips = await getAccessibleTripsForUser(userId);
+      const tripIds = accessibleTrips.map((t) => t.id);
+
+      const syncedEvents =
+        tripIds.length > 0
+          ? await db.select().from(events).where(inArray(events.tripId, tripIds))
+          : [];
+
+      const eventIds = syncedEvents.map((e) => e.id);
+      const [syncedPhotos, syncedPdfs] =
+        eventIds.length > 0
+          ? await Promise.all([
+              db.select().from(photos).where(inArray(photos.eventId, eventIds)),
+              db.select().from(pdfs).where(inArray(pdfs.eventId, eventIds)),
+            ])
+          : [[], []];
 
       res.json({
-        trips: userTrips,
-        events: userEvents,
-        photos: userPhotos,
-        pdfs: userPdfs,
+        trips: accessibleTrips,
+        events: syncedEvents,
+        photos: syncedPhotos,
+        pdfs: syncedPdfs,
         serverTime: new Date().toISOString(),
       });
     } catch (error: unknown) {
@@ -385,14 +538,23 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing required trip fields.' });
       }
 
-      const existing = await db
+      const existingRows = await db
         .select()
         .from(trips)
         .where(eq(trips.clientId, String(clientId)))
         .limit(1);
 
-      if (existing.length > 0 && existing[0].userId !== userId) {
-        return res.status(403).json({ error: 'Forbidden' });
+      let accessRole: 'owner' | 'edit' = 'owner';
+      if (existingRows.length > 0) {
+        const existing = existingRows[0];
+        const role = await getTripAccessForTripRow(existing, userId);
+        if (!role || role === 'view') {
+          return res.status(403).json({ error: 'You do not have permission to modify this trip.' });
+        }
+        if (role !== 'owner' && deletedAt) {
+          return res.status(403).json({ error: 'Only the trip owner can delete this trip.' });
+        }
+        accessRole = role;
       }
 
       const now = updatedAt ? new Date(updatedAt) : new Date();
@@ -425,7 +587,7 @@ async function startServer() {
         })
         .returning();
 
-      res.json(saved);
+      res.json({ ...saved, accessRole });
     } catch (error: unknown) {
       console.error('Trip upsert failed:', error);
       res.status(500).json({ error: 'Failed to save trip.' });
@@ -438,20 +600,29 @@ async function startServer() {
       const clientId = String(req.params.clientId);
       const now = new Date();
 
+      const existing = await db
+        .select()
+        .from(trips)
+        .where(eq(trips.clientId, clientId))
+        .limit(1);
+
+      if (existing.length === 0) {
+        return res.status(404).json({ error: 'Trip not found.' });
+      }
+      if (existing[0].userId !== userId) {
+        return res.status(403).json({ error: 'Only the trip owner can delete this trip.' });
+      }
+
       const [updated] = await db
         .update(trips)
         .set({ deletedAt: now, updatedAt: now })
         .where(and(eq(trips.clientId, clientId), eq(trips.userId, userId)))
         .returning();
 
-      if (!updated) {
-        return res.status(404).json({ error: 'Trip not found.' });
-      }
-
       await db
         .update(events)
         .set({ deletedAt: now, updatedAt: now })
-        .where(and(eq(events.tripId, updated.id), eq(events.userId, userId)));
+        .where(eq(events.tripId, updated.id));
 
       res.json({ deleted: true, clientId });
     } catch (error: unknown) {
@@ -481,14 +652,12 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing required event fields.' });
       }
 
-      const [parentTrip] = await db
-        .select()
-        .from(trips)
-        .where(and(eq(trips.clientId, String(tripClientId)), eq(trips.userId, userId)))
-        .limit(1);
-
-      if (!parentTrip) {
+      const tripAccess = await getTripAccessByClientId(String(tripClientId), userId);
+      if (!tripAccess) {
         return res.status(404).json({ error: 'Parent trip not found on server yet.' });
+      }
+      if (tripAccess.role === 'view') {
+        return res.status(403).json({ error: 'View-only access: cannot modify stops in this trip.' });
       }
 
       const existing = await db
@@ -497,7 +666,7 @@ async function startServer() {
         .where(eq(events.clientId, String(clientId)))
         .limit(1);
 
-      if (existing.length > 0 && existing[0].userId !== userId) {
+      if (existing.length > 0 && existing[0].tripId !== tripAccess.trip.id) {
         return res.status(403).json({ error: 'Forbidden' });
       }
 
@@ -513,7 +682,7 @@ async function startServer() {
         .values({
           clientId: String(clientId),
           tripClientId: String(tripClientId),
-          tripId: parentTrip.id,
+          tripId: tripAccess.trip.id,
           userId,
           eventDate: String(eventDate),
           eventTime: String(eventTime || ''),
@@ -529,7 +698,7 @@ async function startServer() {
           target: events.clientId,
           set: {
             tripClientId: String(tripClientId),
-            tripId: parentTrip.id,
+            tripId: tripAccess.trip.id,
             eventDate: String(eventDate),
             eventTime: String(eventTime || ''),
             location: String(location),
@@ -554,17 +723,20 @@ async function startServer() {
     try {
       const userId = req.dbUserId!;
       const clientId = String(req.params.clientId);
-      const now = new Date();
+      const access = await getEventAccessByClientId(clientId, userId);
 
-      const [updated] = await db
-        .update(events)
-        .set({ deletedAt: now, updatedAt: now })
-        .where(and(eq(events.clientId, clientId), eq(events.userId, userId)))
-        .returning();
-
-      if (!updated) {
+      if (!access) {
         return res.status(404).json({ error: 'Event not found.' });
       }
+      if (access.role === 'view') {
+        return res.status(403).json({ error: 'View-only access: cannot delete stops in this trip.' });
+      }
+
+      const now = new Date();
+      await db
+        .update(events)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(events.id, access.event.id));
 
       res.json({ deleted: true, clientId });
     } catch (error: unknown) {
@@ -594,18 +766,20 @@ async function startServer() {
           return res.status(400).json({ error: 'Missing photo file or metadata.' });
         }
 
-        const [parentEvent] = await db
-          .select()
-          .from(events)
-          .where(and(eq(events.clientId, String(eventClientId)), eq(events.userId, userId)))
-          .limit(1);
+        const eventAccess = await getEventAccessByClientId(String(eventClientId), userId);
 
-        if (!parentEvent) {
+        if (!eventAccess) {
           if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
           if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
           return res.status(404).json({ error: 'Parent event not found on server yet.' });
         }
+        if (eventAccess.role === 'view') {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
+          return res.status(403).json({ error: 'View-only access: cannot upload photos to this trip.' });
+        }
 
+        const parentEvent = eventAccess.event;
         const relativeDiskPath = path.relative(process.cwd(), file.path);
         const relativeThumbPath = thumb ? path.relative(process.cwd(), thumb.path) : '';
 
@@ -652,11 +826,16 @@ async function startServer() {
       const [photo] = await db
         .select()
         .from(photos)
-        .where(and(eq(photos.clientId, clientId), eq(photos.userId, userId)))
+        .where(eq(photos.clientId, clientId))
         .limit(1);
 
       if (!photo || photo.deletedAt) {
         return res.status(404).json({ error: 'Photo not found.' });
+      }
+
+      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      if (!access) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       const thumbPath = photo.thumbDiskPath ? resolveSafeUploadPath(photo.thumbDiskPath) : null;
@@ -688,11 +867,16 @@ async function startServer() {
       const [photo] = await db
         .select()
         .from(photos)
-        .where(and(eq(photos.clientId, clientId), eq(photos.userId, userId)))
+        .where(eq(photos.clientId, clientId))
         .limit(1);
 
       if (!photo || photo.deletedAt) {
         return res.status(404).json({ error: 'Photo not found.' });
+      }
+
+      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      if (!access) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       const fullPath = resolveSafeUploadPath(photo.diskPath);
@@ -716,11 +900,16 @@ async function startServer() {
       const [photo] = await db
         .select()
         .from(photos)
-        .where(and(eq(photos.clientId, clientId), eq(photos.userId, userId)))
+        .where(eq(photos.clientId, clientId))
         .limit(1);
 
       if (!photo) {
         return res.status(404).json({ error: 'Photo not found.' });
+      }
+
+      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      if (!access || access.role === 'view') {
+        return res.status(403).json({ error: 'You do not have permission to delete this photo.' });
       }
 
       await db
@@ -758,17 +947,18 @@ async function startServer() {
         return res.status(400).json({ error: 'Missing PDF file or metadata.' });
       }
 
-      const [parentEvent] = await db
-        .select()
-        .from(events)
-        .where(and(eq(events.clientId, String(eventClientId)), eq(events.userId, userId)))
-        .limit(1);
+      const eventAccess = await getEventAccessByClientId(String(eventClientId), userId);
 
-      if (!parentEvent) {
+      if (!eventAccess) {
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
         return res.status(404).json({ error: 'Parent event not found on server yet.' });
       }
+      if (eventAccess.role === 'view') {
+        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        return res.status(403).json({ error: 'View-only access: cannot upload PDFs to this trip.' });
+      }
 
+      const parentEvent = eventAccess.event;
       const relativeDiskPath = path.relative(process.cwd(), file.path);
 
       const [saved] = await db
@@ -810,11 +1000,16 @@ async function startServer() {
       const [pdf] = await db
         .select()
         .from(pdfs)
-        .where(and(eq(pdfs.clientId, clientId), eq(pdfs.userId, userId)))
+        .where(eq(pdfs.clientId, clientId))
         .limit(1);
 
       if (!pdf || pdf.deletedAt) {
         return res.status(404).json({ error: 'PDF not found.' });
+      }
+
+      const access = await getEventAccessByClientId(pdf.eventClientId, userId);
+      if (!access) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       const fullPath = resolveSafeUploadPath(pdf.diskPath);
@@ -838,11 +1033,16 @@ async function startServer() {
       const [pdf] = await db
         .select()
         .from(pdfs)
-        .where(and(eq(pdfs.clientId, clientId), eq(pdfs.userId, userId)))
+        .where(eq(pdfs.clientId, clientId))
         .limit(1);
 
       if (!pdf) {
         return res.status(404).json({ error: 'PDF not found.' });
+      }
+
+      const access = await getEventAccessByClientId(pdf.eventClientId, userId);
+      if (!access || access.role === 'view') {
+        return res.status(403).json({ error: 'You do not have permission to delete this PDF.' });
       }
 
       await db

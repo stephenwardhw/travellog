@@ -5,6 +5,7 @@ import type { EventRecord, TripRecord } from '../types/journal';
 interface CalendarViewProps {
   trip: TripRecord | null;
   events: EventRecord[];
+  canEdit: boolean;
   onSelectEvent: (event: EventRecord) => void;
   onAddStop: (date: string) => void;
 }
@@ -14,6 +15,7 @@ const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 export const CalendarView: React.FC<CalendarViewProps> = ({
   trip,
   events,
+  canEdit,
   onSelectEvent,
   onAddStop,
 }) => {
@@ -240,20 +242,22 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 {selectedDay}
               </h3>
             </div>
-            <button
-              type="button"
-              onClick={() => onAddStop(selectedDay)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-800 min-h-[40px] whitespace-nowrap shrink-0"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Stop
-            </button>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={() => onAddStop(selectedDay)}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-800 min-h-[40px] whitespace-nowrap shrink-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Stop
+              </button>
+            )}
           </div>
 
           {selectedDayEvents.length === 0 ? (
             <p className="text-sm text-slate-500 py-4">
-              No stops logged on {selectedDay}. Tap &ldquo;Add Stop&rdquo; to schedule an event or
-              write a day journal.
+              No stops logged on {selectedDay}.
+              {canEdit ? ' Tap “Add Stop” to schedule an event or write a day journal.' : ''}
             </p>
           ) : (
             <div className="divide-y divide-slate-100">

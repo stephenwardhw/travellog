@@ -95,8 +95,21 @@ export const pdfs = pgTable('pdfs', {
   deletedAt: timestamp('deleted_at'),
 });
 
+export const tripShares = pgTable('trip_shares', {
+  id: serial('id').primaryKey(),
+  tripId: integer('trip_id')
+    .references(() => trips.id, { onDelete: 'cascade' })
+    .notNull(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  permission: text('permission').notNull().default('view'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
 export const usersRelations = relations(users, ({ many }) => ({
   trips: many(trips),
+  tripShares: many(tripShares),
   events: many(events),
   photos: many(photos),
   pdfs: many(pdfs),
@@ -107,7 +120,19 @@ export const tripsRelations = relations(trips, ({ one, many }) => ({
     fields: [trips.userId],
     references: [users.id],
   }),
+  shares: many(tripShares),
   events: many(events),
+}));
+
+export const tripSharesRelations = relations(tripShares, ({ one }) => ({
+  trip: one(trips, {
+    fields: [tripShares.tripId],
+    references: [trips.id],
+  }),
+  user: one(users, {
+    fields: [tripShares.userId],
+    references: [users.id],
+  }),
 }));
 
 export const eventsRelations = relations(events, ({ one, many }) => ({
