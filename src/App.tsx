@@ -4,6 +4,7 @@ import {
   ChevronDown,
   Edit3,
   FileSpreadsheet,
+  FileText,
   ListTodo,
   LogOut,
   Map as MapIcon,
@@ -40,6 +41,7 @@ import { SearchView } from './components/SearchView';
 import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
 import { TripShareModal } from './components/TripShareModal';
+import { TripReportModal } from './components/TripReportModal';
 import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
 import { PhotoLightbox } from './components/PhotoLightbox';
@@ -74,6 +76,7 @@ export default function App() {
   const [tripModalOpen, setTripModalOpen] = useState(false);
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
   const [csvModalOpen, setCsvModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -736,8 +739,9 @@ export default function App() {
   const drawerOwnerLabel = drawerTrip?.ownerName || drawerTrip?.ownerEmail || '';
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col pb-20 md:pb-10">
-      <OfflineIndicator pendingCount={pendingCount} />
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col pb-20 md:pb-10 print:pb-0 print:bg-white">
+      <div className={reportModalOpen ? 'print:hidden flex flex-col flex-1' : 'flex flex-col flex-1'}>
+        <OfflineIndicator pendingCount={pendingCount} />
 
       {/* 3-Zone Top Bar Contract */}
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
@@ -903,6 +907,21 @@ export default function App() {
                   >
                     <Edit3 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     Edit Trip
+                  </button>
+                )}
+
+                {activeTrip && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setReportModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    Trip Report
                   </button>
                 )}
 
@@ -1082,6 +1101,17 @@ export default function App() {
                 aria-label="Delete active trip"
               >
                 <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {activeTrip && (
+              <button
+                type="button"
+                onClick={() => setReportModalOpen(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
+              >
+                <FileText className="w-3.5 h-3.5 text-teal-700" />
+                Report
               </button>
             )}
 
@@ -1279,6 +1309,7 @@ export default function App() {
           );
         })}
       </nav>
+      </div>
 
       {/* Modals & Drawers */}
       <TripModal
@@ -1294,6 +1325,19 @@ export default function App() {
         token={session.token}
         onUnauthorized={handleSignOut}
         onClose={() => setShareModalOpen(false)}
+      />
+
+      <TripReportModal
+        open={reportModalOpen}
+        trip={activeTrip}
+        events={activeTripEvents}
+        photosByEvent={photosByEvent}
+        pdfsByEvent={pdfsByEvent}
+        authToken={session.token}
+        onOpenPhoto={(list, index, title) =>
+          setLightboxState({ photos: list, initialIndex: index, title })
+        }
+        onClose={() => setReportModalOpen(false)}
       />
 
       <CsvImportModal
