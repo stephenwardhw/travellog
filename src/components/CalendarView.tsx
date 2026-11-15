@@ -167,9 +167,20 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           <div className="grid grid-cols-7 divide-x divide-y divide-slate-100">
             {calendarCells.map((cell) => {
               const dayEvents = eventsByDate.get(cell.iso) || [];
+              const hasEvents = dayEvents.length > 0;
               const isSelected = cell.iso === selectedDay;
               const inTripRange =
                 trip && cell.iso >= trip.startDate && cell.iso <= trip.endDate;
+
+              const cellBgClass = !cell.inMonth
+                ? hasEvents
+                  ? 'bg-amber-50/75 text-slate-500 hover:bg-amber-100/70'
+                  : 'bg-slate-50/70 text-slate-400 hover:bg-slate-100/60'
+                : hasEvents
+                ? 'bg-amber-100/80 text-slate-900 hover:bg-amber-100'
+                : inTripRange
+                ? 'bg-teal-50/40 text-slate-900 hover:bg-teal-50/75'
+                : 'bg-white text-slate-900 hover:bg-slate-50';
 
               return (
                 <div
@@ -183,24 +194,24 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                       setSelectedDay(cell.iso);
                     }
                   }}
-                  className={`min-h-[76px] sm:min-h-[104px] p-1.5 sm:p-2 cursor-pointer transition-colors flex flex-col ${
-                    !cell.inMonth
-                      ? 'bg-slate-50/70 text-slate-400'
-                      : inTripRange
-                      ? 'bg-teal-50/35 text-slate-900'
-                      : 'bg-white text-slate-900'
-                  } ${isSelected ? 'ring-2 ring-inset ring-teal-700' : 'hover:bg-slate-50'}`}
+                  className={`min-h-[76px] sm:min-h-[104px] p-1.5 sm:p-2 cursor-pointer transition-colors flex flex-col ${cellBgClass} ${
+                    isSelected ? 'ring-2 ring-inset ring-teal-700' : ''
+                  }`}
                 >
                   <div className="flex items-center justify-between">
                     <span
                       className={`text-xs font-medium tabular-nums ${
-                        isSelected ? 'text-teal-800 font-semibold' : ''
+                        isSelected
+                          ? 'text-teal-800 font-semibold'
+                          : hasEvents
+                          ? 'text-amber-950 font-semibold'
+                          : ''
                       }`}
                     >
                       {cell.day}
                     </span>
                     {dayEvents.length > 0 && (
-                      <span className="sm:hidden text-[10px] font-semibold text-teal-700 tabular-nums">
+                      <span className="sm:hidden text-[10px] font-semibold text-amber-900 tabular-nums">
                         {dayEvents.length}
                       </span>
                     )}
@@ -223,7 +234,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                       </button>
                     ))}
                     {dayEvents.length > 2 && (
-                      <span className="text-[10px] font-medium text-slate-500 px-1 tabular-nums">
+                      <span className="text-[10px] font-medium text-amber-900 px-1 tabular-nums">
                         +{dayEvents.length - 2} more
                       </span>
                     )}
@@ -231,6 +242,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 </div>
               );
             })}
+          </div>
+
+          <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-2.5 flex flex-wrap items-center gap-4 text-[11px] text-slate-600">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded border border-amber-300 bg-amber-100/80 inline-block" />
+              Day with stops
+            </span>
+            {trip && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded border border-teal-200 bg-teal-50/70 inline-block" />
+                Trip dates
+              </span>
+            )}
           </div>
         </div>
 
