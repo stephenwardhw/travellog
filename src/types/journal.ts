@@ -121,3 +121,13 @@ export interface SearchMatch {
   pdfClientId?: string;
   snippet: string;
 }
+
+export interface CalendarThemeSettings {
+  eventDayBg: string;
+  tripDayBg: string;
+}
+
+export const DEFAULT_CALENDAR_SETTINGS: CalendarThemeSettings = {
+  eventDayBg: '#fef3c7',
+  tripDayBg: '#dff5f2',
+};

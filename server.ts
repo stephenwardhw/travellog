@@ -3,9 +3,9 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
-import { events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
+import { appSettings, events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
 import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
 import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
 import {
@@ -39,6 +39,38 @@ fs.mkdirSync(PDFS_DIR, { recursive: true });
 
 function sanitizeSegment(input: string): string {
   return input.replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+const DEFAULT_CALENDAR_SETTINGS = {
+  eventDayBg: '#fef3c7',
+  tripDayBg: '#dff5f2',
+};
+
+const CALENDAR_EVENT_COLOR_KEY = 'calendar_event_day_color';
+const CALENDAR_TRIP_COLOR_KEY = 'calendar_trip_day_color';
+
+function normalizeHexColor(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+  return null;
+}
+
+async function getCalendarSettings() {
+  const rows = await db
+    .select()
+    .from(appSettings)
+    .where(inArray(appSettings.key, [CALENDAR_EVENT_COLOR_KEY, CALENDAR_TRIP_COLOR_KEY]));
+
+  const map = new Map(rows.map((r) => [r.key, r.value]));
+  return {
+    eventDayBg:
+      normalizeHexColor(map.get(CALENDAR_EVENT_COLOR_KEY)) || DEFAULT_CALENDAR_SETTINGS.eventDayBg,
+    tripDayBg:
+      normalizeHexColor(map.get(CALENDAR_TRIP_COLOR_KEY)) || DEFAULT_CALENDAR_SETTINGS.tripDayBg,
+  };
 }
 
 function resolveSafeUploadPath(relativeDiskPath: string): string | null {
@@ -360,6 +392,54 @@ async function startServer() {
     }
   });
 
+  app.get('/api/settings/calendar', requireAuth, async (_req: AuthRequest, res) => {
+    try {
+      const settings = await getCalendarSettings();
+      res.json({ settings });
+    } catch (error) {
+      console.error('Load calendar settings failed:', error);
+      res.status(500).json({ error: 'Failed to load calendar settings.' });
+    }
+  });
+
+  app.put(
+    '/api/admin/settings/calendar',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthRequest, res) => {
+      try {
+        const eventDayBg = normalizeHexColor(req.body?.eventDayBg);
+        const tripDayBg = normalizeHexColor(req.body?.tripDayBg);
+
+        if (!eventDayBg || !tripDayBg) {
+          return res
+            .status(400)
+            .json({ error: 'Both colors must be valid 6-digit hex codes (e.g. #fef3c7).' });
+        }
+
+        const now = new Date();
+        await db
+          .insert(appSettings)
+          .values([
+            { key: CALENDAR_EVENT_COLOR_KEY, value: eventDayBg, updatedAt: now },
+            { key: CALENDAR_TRIP_COLOR_KEY, value: tripDayBg, updatedAt: now },
+          ])
+          .onConflictDoUpdate({
+            target: appSettings.key,
+            set: {
+              value: sql`excluded.value`,
+              updatedAt: now,
+            },
+          });
+
+        res.json({ settings: { eventDayBg, tripDayBg } });
+      } catch (error) {
+        console.error('Save calendar settings failed:', error);
+        res.status(500).json({ error: 'Failed to save calendar settings.' });
+      }
+    }
+  );
+
   app.get('/api/users/shareable', requireAuth, async (req: AuthRequest, res) => {
     try {
       const shareable = await listShareableUsers(req.dbUserId!);
@@ -515,11 +595,14 @@ async function startServer() {
             ])
           : [[], []];
 
+      const calendarSettings = await getCalendarSettings();
+
       res.json({
         trips: accessibleTrips,
         events: syncedEvents,
         photos: syncedPhotos,
         pdfs: syncedPdfs,
+        calendarSettings,
         serverTime: new Date().toISOString(),
       });
     } catch (error: unknown) {

@@ -21,13 +21,15 @@ import { useNetworkStatus } from './lib/network';
 import { runFullSync } from './lib/syncEngine';
 import { generateThumbnailBlob } from './lib/imageThumb';
 import type { ParsedCsvStop } from './lib/csvParser';
-import type {
-  AppView,
-  AuthSession,
-  EventRecord,
-  PdfRecord,
-  PhotoRecord,
-  TripRecord,
+import {
+  DEFAULT_CALENDAR_SETTINGS,
+  type AppView,
+  type AuthSession,
+  type CalendarThemeSettings,
+  type EventRecord,
+  type PdfRecord,
+  type PhotoRecord,
+  type TripRecord,
 } from './types/journal';
 import { AuthGate } from './components/AuthGate';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
@@ -65,6 +67,9 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [calendarSettings, setCalendarSettings] = useState<CalendarThemeSettings>(
+    DEFAULT_CALENDAR_SETTINGS
+  );
 
   const [tripModalOpen, setTripModalOpen] = useState(false);
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
@@ -111,17 +116,27 @@ export default function App() {
   }, [mobileMenuOpen]);
 
   const loadFromLocalDb = useCallback(async () => {
-    const [allTrips, allEvents, allPhotos, allPdfs, queue, savedTripId, savedWifiOnly, savedSyncAt] =
-      await Promise.all([
-        offlineDb.getAllTrips(),
-        offlineDb.getAllEvents(),
-        offlineDb.getAllPhotos(),
-        offlineDb.getAllPdfs(),
-        offlineDb.getQueue(),
-        offlineDb.getMeta<string>('activeTripClientId'),
-        offlineDb.getMeta<boolean>('wifiOnlySync'),
-        offlineDb.getMeta<string>('lastSyncAt'),
-      ]);
+    const [
+      allTrips,
+      allEvents,
+      allPhotos,
+      allPdfs,
+      queue,
+      savedTripId,
+      savedWifiOnly,
+      savedSyncAt,
+      savedCalendarSettings,
+    ] = await Promise.all([
+      offlineDb.getAllTrips(),
+      offlineDb.getAllEvents(),
+      offlineDb.getAllPhotos(),
+      offlineDb.getAllPdfs(),
+      offlineDb.getQueue(),
+      offlineDb.getMeta<string>('activeTripClientId'),
+      offlineDb.getMeta<boolean>('wifiOnlySync'),
+      offlineDb.getMeta<string>('lastSyncAt'),
+      offlineDb.getMeta<CalendarThemeSettings>('calendarSettings'),
+    ]);
 
     const sortedTrips = [...allTrips].sort((a, b) => b.startDate.localeCompare(a.startDate));
     setTrips(sortedTrips);
@@ -135,6 +150,9 @@ export default function App() {
     }
     if (savedSyncAt) {
       setLastSyncAt(savedSyncAt);
+    }
+    if (savedCalendarSettings?.eventDayBg && savedCalendarSettings?.tripDayBg) {
+      setCalendarSettings(savedCalendarSettings);
     }
 
     setActiveTripClientId((prev) => {
@@ -1188,6 +1206,7 @@ export default function App() {
             trip={activeTrip}
             events={activeTripEvents}
             canEdit={canEditActiveTrip}
+            calendarSettings={calendarSettings}
             onSelectEvent={openExistingEvent}
             onAddStop={(date) => openNewStop(date)}
           />
@@ -1218,6 +1237,11 @@ export default function App() {
           <AdminUsersView
             token={session.token}
             currentUser={session.user}
+            calendarSettings={calendarSettings}
+            onCalendarSettingsSaved={async (next) => {
+              setCalendarSettings(next);
+              await offlineDb.setMeta('calendarSettings', next);
+            }}
             onUnauthorized={handleSignOut}
           />
         )}

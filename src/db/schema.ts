@@ -107,6 +107,12 @@ export const tripShares = pgTable('trip_shares', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const usersRelations = relations(users, ({ many }) => ({
   trips: many(trips),
   tripShares: many(tripShares),

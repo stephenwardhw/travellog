@@ -1,6 +1,12 @@
 import { readNetworkState } from './network';
 import { offlineDb } from './offlineDb';
-import type { EventRecord, PdfRecord, PhotoRecord, TripRecord } from '../types/journal';
+import type {
+  CalendarThemeSettings,
+  EventRecord,
+  PdfRecord,
+  PhotoRecord,
+  TripRecord,
+} from '../types/journal';
 
 export interface SyncResult {
   status: 'synced' | 'offline' | 'paused-cellular' | 'unauthorized' | 'error';
@@ -191,7 +197,12 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
         events: EventRecord[];
         photos: PhotoRecord[];
         pdfs: PdfRecord[];
+        calendarSettings?: CalendarThemeSettings;
       } = await pullRes.json();
+
+      if (payload.calendarSettings?.eventDayBg && payload.calendarSettings?.tripDayBg) {
+        await offlineDb.setMeta('calendarSettings', payload.calendarSettings);
+      }
 
       const remainingQueue = await offlineDb.getQueue();
       const pendingIds = new Set(remainingQueue.map((q) => q.clientId));
