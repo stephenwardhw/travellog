@@ -182,7 +182,8 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
 
       const descEl = document.createElement('div');
       descEl.className = 'text-xs text-slate-600 line-clamp-2';
-      descEl.textContent = ev.journalEntry || plainDetails || 'No notes yet.';
+      descEl.textContent =
+        htmlToPlainText(ev.journalEntry) || plainDetails || 'No notes yet.';
 
       const btn = document.createElement('button');
       btn.type = 'button';

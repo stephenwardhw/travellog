@@ -87,19 +87,20 @@ export const SearchView: React.FC<SearchViewProps> = ({
       for (const ev of events) {
         const trip = tripMap.get(ev.tripClientId);
         const plainDetails = htmlToPlainText(ev.details);
+        const plainJournal = htmlToPlainText(ev.journalEntry);
         if (ev.location.toLowerCase().includes(q)) {
           results.push({
             event: ev,
             trip,
             source: 'location',
-            snippet: plainDetails || ev.journalEntry || ev.location,
+            snippet: plainDetails || plainJournal || ev.location,
           });
-        } else if (ev.journalEntry.toLowerCase().includes(q)) {
+        } else if (plainJournal.toLowerCase().includes(q)) {
           results.push({
             event: ev,
             trip,
             source: 'journal',
-            snippet: buildSnippet(ev.journalEntry, q),
+            snippet: buildSnippet(plainJournal, q),
           });
         } else if (plainDetails.toLowerCase().includes(q)) {
           results.push({

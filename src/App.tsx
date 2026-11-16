@@ -8,6 +8,7 @@ import {
   FileText,
   ListTodo,
   LogOut,
+  Luggage,
   Map as MapIcon,
   Plus,
   RefreshCw,
@@ -31,15 +32,19 @@ import {
   type BookingStatus,
   type CalendarThemeSettings,
   type EventRecord,
+  type PackingCategory,
+  type PackingItemRecord,
   type PdfRecord,
   type PhotoRecord,
   type TripRecord,
+  type WeatherForecastResponse,
 } from './types/journal';
 import { AuthGate } from './components/AuthGate';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
 import { AgendaView } from './components/AgendaView';
 import { CalendarView } from './components/CalendarView';
 import { CartoMapView } from './components/CartoMapView';
+import { PackingChecklistView } from './components/PackingChecklistView';
 import { SearchView } from './components/SearchView';
 import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
@@ -65,10 +70,14 @@ export default function App() {
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
+  const [packingItems, setPackingItems] = useState<PackingItemRecord[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [pdfs, setPdfs] = useState<PdfRecord[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
   const [activeTripClientId, setActiveTripClientId] = useState<string | null>(null);
+  const [weather, setWeather] = useState<WeatherForecastResponse | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
 
   const [wifiOnlySync, setWifiOnlySync] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -137,6 +146,7 @@ export default function App() {
       allTrips,
       allEvents,
       allBookings,
+      allPackingItems,
       allPhotos,
       allPdfs,
       queue,
@@ -148,6 +158,7 @@ export default function App() {
       offlineDb.getAllTrips(),
       offlineDb.getAllEvents(),
       offlineDb.getAllBookings(),
+      offlineDb.getAllPackingItems(),
       offlineDb.getAllPhotos(),
       offlineDb.getAllPdfs(),
       offlineDb.getQueue(),
@@ -161,6 +172,7 @@ export default function App() {
     setTrips(sortedTrips);
     setEvents(allEvents);
     setBookings(allBookings);
+    setPackingItems(allPackingItems);
     setPhotos(allPhotos);
     setPdfs(allPdfs);
     setPendingCount(queue.length);
@@ -357,6 +369,106 @@ export default function App() {
     }
     return map;
   }, [pdfs]);
+
+  const activeTripPackingItems = useMemo(() => {
+    if (!activeTrip) return [];
+    return packingItems.filter((item) => item.tripClientId === activeTrip.clientId);
+  }, [packingItems, activeTrip]);
+
+  const activeTripPdfCount = useMemo(() => {
+    if (!activeTrip) return 0;
+    const eventIds = new Set(activeTripEvents.map((e) => e.clientId));
+    const bookingIds = new Set(activeTripBookings.map((b) => b.clientId));
+    let count = 0;
+    for (const pdf of pdfs) {
+      if ((pdf.eventClientId && eventIds.has(pdf.eventClientId)) || (pdf.bookingClientId && bookingIds.has(pdf.bookingClientId))) {
+        count += 1;
+      }
+    }
+    return count;
+  }, [activeTrip, activeTripEvents, activeTripBookings, pdfs]);
+
+  const loadWeatherForTrip = useCallback(
+    async (forceRefresh = false) => {
+      if (!activeTrip || !activeTrip.destination.trim()) {
+        setWeather(null);
+        setWeatherError(null);
+        setWeatherLoading(false);
+        return;
+      }
+
+      const cacheKey = `weather_v1_${activeTrip.clientId}_${activeTrip.destination.trim().toLowerCase()}_${activeTrip.startDate}_${activeTrip.endDate}`;
+      const cached = await offlineDb.getMeta<WeatherForecastResponse>(cacheKey);
+      if (cached) {
+        setWeather(cached);
+        setWeatherError(null);
+      } else {
+        setWeather(null);
+      }
+
+      const ageMs = cached?.fetchedAt ? Date.now() - Date.parse(cached.fetchedAt) : Infinity;
+      const needsFetch = forceRefresh || !cached || Number.isNaN(ageMs) || ageMs > 3 * 60 * 60 * 1000;
+
+      if (!needsFetch) {
+        setWeatherLoading(false);
+        return;
+      }
+
+      if (!network.isOnline || !session?.token) {
+        setWeatherLoading(false);
+        if (!cached) {
+          setWeatherError('Offline — weather forecast will load once back online.');
+        }
+        return;
+      }
+
+      setWeatherLoading(true);
+      setWeatherError(null);
+      try {
+        const params = new URLSearchParams({
+          destination: activeTrip.destination.trim(),
+          startDate: activeTrip.startDate,
+          endDate: activeTrip.endDate,
+        });
+        const res = await fetch(`/api/weather?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${session.token}` },
+        });
+        if (res.status === 401) {
+          await handleSignOut();
+          return;
+        }
+        const data = await res.json();
+        if (!res.ok) {
+          if (!cached) {
+            setWeatherError(data?.error || 'Unable to load weather forecast.');
+          }
+          return;
+        }
+        await offlineDb.setMeta(cacheKey, data);
+        setWeather(data as WeatherForecastResponse);
+        setWeatherError(null);
+      } catch {
+        if (!cached) {
+          setWeatherError('Could not reach weather service.');
+        }
+      } finally {
+        setWeatherLoading(false);
+      }
+    },
+    [
+      activeTrip?.clientId,
+      activeTrip?.destination,
+      activeTrip?.startDate,
+      activeTrip?.endDate,
+      network.isOnline,
+      session?.token,
+      handleSignOut,
+    ]
+  );
+
+  useEffect(() => {
+    loadWeatherForTrip(false);
+  }, [loadWeatherForTrip]);
 
   const selectActiveTrip = async (clientId: string) => {
     setActiveTripClientId(clientId);
@@ -728,6 +840,125 @@ export default function App() {
     triggerSync();
   };
 
+  const handleAddPackingItems = async (
+    items: Array<{
+      name: string;
+      category: PackingCategory;
+      quantity: number;
+      isAutoSuggested: boolean;
+      reason: string;
+    }>
+  ) => {
+    if (!activeTrip || !canEditTripById(activeTrip.clientId) || items.length === 0) return;
+    const now = new Date().toISOString();
+    for (const entry of items) {
+      const record: PackingItemRecord = {
+        clientId: makeId(),
+        tripClientId: activeTrip.clientId,
+        name: entry.name.trim(),
+        category: entry.category,
+        quantity: Math.max(1, Math.min(99, entry.quantity || 1)),
+        packed: false,
+        isAutoSuggested: entry.isAutoSuggested,
+        reason: entry.reason || '',
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        syncStatus: 'pending',
+      };
+      await offlineDb.putPackingItem(record);
+      await offlineDb.enqueue({
+        type: 'packing_upsert',
+        clientId: record.clientId,
+        createdAt: now,
+      });
+    }
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleTogglePackingItem = async (item: PackingItemRecord) => {
+    if (!canEditTripById(item.tripClientId)) return;
+    const now = new Date().toISOString();
+    const updated: PackingItemRecord = {
+      ...item,
+      packed: !item.packed,
+      updatedAt: now,
+      syncStatus: 'pending',
+    };
+    await offlineDb.putPackingItem(updated);
+    await offlineDb.enqueue({
+      type: 'packing_upsert',
+      clientId: updated.clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleUpdatePackingQuantity = async (item: PackingItemRecord, nextQty: number) => {
+    if (!canEditTripById(item.tripClientId)) return;
+    const clamped = Math.max(1, Math.min(99, nextQty));
+    if (clamped === item.quantity) return;
+    const now = new Date().toISOString();
+    const updated: PackingItemRecord = {
+      ...item,
+      quantity: clamped,
+      updatedAt: now,
+      syncStatus: 'pending',
+    };
+    await offlineDb.putPackingItem(updated);
+    await offlineDb.enqueue({
+      type: 'packing_upsert',
+      clientId: updated.clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleDeletePackingItem = async (clientId: string) => {
+    const existing = await offlineDb.getPackingItemRaw(clientId);
+    if (!existing) return;
+    if (!canEditTripById(existing.tripClientId)) return;
+    const now = new Date().toISOString();
+    await offlineDb.putPackingItem({
+      ...existing,
+      deletedAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+    await offlineDb.enqueue({
+      type: 'packing_delete',
+      clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleClearPackedItems = async () => {
+    if (!activeTrip || !canEditTripById(activeTrip.clientId)) return;
+    const packed = activeTripPackingItems.filter((i) => i.packed);
+    if (packed.length === 0) return;
+    const now = new Date().toISOString();
+    for (const item of packed) {
+      await offlineDb.putPackingItem({
+        ...item,
+        packed: false,
+        updatedAt: now,
+        syncStatus: 'pending',
+      });
+      await offlineDb.enqueue({
+        type: 'packing_upsert',
+        clientId: item.clientId,
+        createdAt: now,
+      });
+    }
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
   const handleAddPhotos = async (eventClientId: string, fileList: FileList) => {
     const now = new Date().toISOString();
     for (const file of Array.from(fileList)) {
@@ -988,6 +1219,7 @@ export default function App() {
                 ['agenda', 'Agenda'],
                 ['calendar', 'Calendar'],
                 ['map', 'Map'],
+                ['packing', 'Packing'],
                 ['search', 'Search'],
                 ...(isAdmin ? ([['admin', 'Admin']] as const) : []),
               ] as const
@@ -1474,7 +1706,20 @@ export default function App() {
             photosByEvent={photosByEvent}
             pdfsByEvent={pdfsByEvent}
             pdfsByBooking={pdfsByBooking}
+            weather={weather}
+            weatherLoading={weatherLoading}
+            weatherError={weatherError}
+            isOnline={network.isOnline}
             canEdit={canEditActiveTrip}
+            onRefreshWeather={() => loadWeatherForTrip(true)}
+            onEditTrip={
+              activeTrip
+                ? () => {
+                    setEditingTrip(activeTrip);
+                    setTripModalOpen(true);
+                  }
+                : undefined
+            }
             onSelectEvent={openExistingEvent}
             onSelectBooking={openExistingBooking}
             onOpenPhoto={(list, index, title) =>
@@ -1515,6 +1760,23 @@ export default function App() {
           />
         )}
 
+        {view === 'packing' && (
+          <PackingChecklistView
+            trip={activeTrip}
+            items={activeTripPackingItems}
+            events={activeTripEvents}
+            bookings={activeTripBookings}
+            weather={weather}
+            pdfCount={activeTripPdfCount}
+            canEdit={canEditActiveTrip}
+            onAddItems={handleAddPackingItems}
+            onToggleItem={handleTogglePackingItem}
+            onUpdateQuantity={handleUpdatePackingQuantity}
+            onDeleteItem={handleDeletePackingItem}
+            onClearPacked={handleClearPackedItems}
+          />
+        )}
+
         {view === 'search' && (
           <SearchView
             trips={trips}
@@ -1544,7 +1806,7 @@ export default function App() {
       <nav
         aria-label="Primary mobile navigation"
         className={`md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 backdrop-blur-md border-t border-slate-200 grid items-center ${
-          isAdmin ? 'grid-cols-5' : 'grid-cols-4'
+          isAdmin ? 'grid-cols-6' : 'grid-cols-5'
         }`}
       >
         {(
@@ -1552,6 +1814,7 @@ export default function App() {
             ['agenda', 'Agenda', ListTodo],
             ['calendar', 'Calendar', CalendarIcon],
             ['map', 'Map', MapIcon],
+            ['packing', 'Packing', Luggage],
             ['search', 'Search', SearchIcon],
             ...(isAdmin ? ([['admin', 'Admin', Users]] as const) : []),
           ] as const

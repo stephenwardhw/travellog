@@ -5,7 +5,16 @@ import path from 'path';
 import multer from 'multer';
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
-import { appSettings, bookings, events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
+import {
+  appSettings,
+  bookings,
+  events,
+  packingItems,
+  pdfs,
+  photos,
+  trips,
+  tripShares,
+} from './src/db/schema.ts';
 import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
 import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
 import {
@@ -22,6 +31,7 @@ import {
   getAccessibleTripsForUser,
   getBookingAccessByClientId,
   getEventAccessByClientId,
+  getPackingItemAccessByClientId,
   getTripAccessByClientId,
   getTripAccessForTripRow,
   listShareableUsers,
@@ -80,6 +90,62 @@ function resolveSafeUploadPath(relativeDiskPath: string): string | null {
     return null;
   }
   return resolved;
+}
+
+function addDaysIso(iso: string, deltaDays: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  const dt = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  return dt.toISOString().slice(0, 10);
+}
+
+function wmoCodeToLabel(code: number): string {
+  if (code === 0) return 'Clear sky';
+  if (code === 1) return 'Mainly clear';
+  if (code === 2) return 'Partly cloudy';
+  if (code === 3) return 'Overcast';
+  if (code === 45 || code === 48) return 'Foggy';
+  if (code >= 51 && code <= 55) return 'Drizzle';
+  if (code === 56 || code === 57) return 'Freezing drizzle';
+  if (code >= 61 && code <= 65) return 'Rain';
+  if (code === 66 || code === 67) return 'Freezing rain';
+  if (code >= 71 && code <= 77) return 'Snow';
+  if (code >= 80 && code <= 82) return 'Rain showers';
+  if (code === 85 || code === 86) return 'Snow showers';
+  if (code === 95) return 'Thunderstorm';
+  if (code === 96 || code === 99) return 'Severe thunderstorm';
+  return 'Mixed weather';
+}
+
+interface GeoCandidate {
+  name: string;
+  country?: string;
+  admin1?: string;
+  latitude: number;
+  longitude: number;
+  timezone?: string;
+}
+
+async function geocodeDestination(rawDestination: string): Promise<GeoCandidate | null> {
+  const cleaned = rawDestination.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  const candidates = [cleaned];
+  if (cleaned.includes(',')) {
+    candidates.push(cleaned.split(',')[0].trim());
+  }
+
+  for (const query of candidates) {
+    if (!query) continue;
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+      query
+    )}&count=1&language=en&format=json`;
+    const geoRes = await fetch(url);
+    if (!geoRes.ok) continue;
+    const geoJson = (await geoRes.json()) as { results?: GeoCandidate[] };
+    if (Array.isArray(geoJson.results) && geoJson.results.length > 0) {
+      return geoJson.results[0];
+    }
+  }
+  return null;
 }
 
 const photoUpload = multer({
@@ -582,13 +648,14 @@ async function startServer() {
       const accessibleTrips = await getAccessibleTripsForUser(userId);
       const tripIds = accessibleTrips.map((t) => t.id);
 
-      const [syncedEvents, syncedBookings] =
+      const [syncedEvents, syncedBookings, syncedPackingItems] =
         tripIds.length > 0
           ? await Promise.all([
               db.select().from(events).where(inArray(events.tripId, tripIds)),
               db.select().from(bookings).where(inArray(bookings.tripId, tripIds)),
+              db.select().from(packingItems).where(inArray(packingItems.tripId, tripIds)),
             ])
-          : [[], []];
+          : [[], [], []];
 
       const eventIds = syncedEvents.map((e) => e.id);
       const bookingIds = syncedBookings.map((b) => b.id);
@@ -615,6 +682,7 @@ async function startServer() {
         trips: accessibleTrips,
         events: syncedEvents,
         bookings: syncedBookings,
+        packingItems: syncedPackingItems,
         photos: syncedPhotos,
         pdfs: syncedPdfs,
         calendarSettings,
@@ -726,6 +794,11 @@ async function startServer() {
         .update(bookings)
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(bookings.tripId, updated.id));
+
+      await db
+        .update(packingItems)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(packingItems.tripId, updated.id));
 
       res.json({ deleted: true, clientId });
     } catch (error: unknown) {
@@ -966,6 +1039,238 @@ async function startServer() {
     } catch (error: unknown) {
       console.error('Booking delete failed:', error);
       res.status(500).json({ error: 'Failed to delete booking.' });
+    }
+  });
+
+  app.post('/api/packing/upsert', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const {
+        clientId,
+        tripClientId,
+        name,
+        category,
+        quantity,
+        packed,
+        isAutoSuggested,
+        reason,
+        updatedAt,
+        deletedAt,
+      } = req.body || {};
+
+      if (!clientId || !tripClientId || !name) {
+        return res.status(400).json({ error: 'Missing required packing item fields.' });
+      }
+
+      const tripAccess = await getTripAccessByClientId(String(tripClientId), userId);
+      if (!tripAccess) {
+        return res.status(404).json({ error: 'Parent trip not found on server yet.' });
+      }
+      if (tripAccess.role === 'view') {
+        return res.status(403).json({
+          error: 'View-only access: cannot modify packing checklist in this trip.',
+        });
+      }
+
+      const existing = await db
+        .select()
+        .from(packingItems)
+        .where(eq(packingItems.clientId, String(clientId)))
+        .limit(1);
+
+      if (existing.length > 0 && existing[0].tripId !== tripAccess.trip.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const now = updatedAt ? new Date(updatedAt) : new Date();
+      const deletedTimestamp = deletedAt ? new Date(deletedAt) : null;
+      const qtyNum = Math.max(1, Math.min(99, Number(quantity) || 1));
+
+      const [saved] = await db
+        .insert(packingItems)
+        .values({
+          clientId: String(clientId),
+          tripClientId: String(tripClientId),
+          tripId: tripAccess.trip.id,
+          userId,
+          name: String(name),
+          category: String(category || 'Other'),
+          quantity: qtyNum,
+          packed: Boolean(packed),
+          isAutoSuggested: Boolean(isAutoSuggested),
+          reason: String(reason || ''),
+          updatedAt: now,
+          deletedAt: deletedTimestamp,
+        })
+        .onConflictDoUpdate({
+          target: packingItems.clientId,
+          set: {
+            tripClientId: String(tripClientId),
+            tripId: tripAccess.trip.id,
+            name: String(name),
+            category: String(category || 'Other'),
+            quantity: qtyNum,
+            packed: Boolean(packed),
+            isAutoSuggested: Boolean(isAutoSuggested),
+            reason: String(reason || ''),
+            updatedAt: now,
+            deletedAt: deletedTimestamp,
+          },
+        })
+        .returning();
+
+      res.json(saved);
+    } catch (error: unknown) {
+      console.error('Packing item upsert failed:', error);
+      res.status(500).json({ error: 'Failed to save packing item.' });
+    }
+  });
+
+  app.delete('/api/packing/:clientId', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const access = await getPackingItemAccessByClientId(clientId, userId);
+
+      if (!access) {
+        return res.status(404).json({ error: 'Packing item not found.' });
+      }
+      if (access.role === 'view') {
+        return res.status(403).json({
+          error: 'View-only access: cannot delete packing items in this trip.',
+        });
+      }
+
+      const now = new Date();
+      await db
+        .update(packingItems)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(packingItems.id, access.item.id));
+
+      res.json({ deleted: true, clientId });
+    } catch (error: unknown) {
+      console.error('Packing item delete failed:', error);
+      res.status(500).json({ error: 'Failed to delete packing item.' });
+    }
+  });
+
+  app.get('/api/weather', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const destination = String(req.query.destination || '').trim();
+      const startDate = String(req.query.startDate || '').trim();
+      const endDate = String(req.query.endDate || startDate).trim();
+
+      if (!destination) {
+        return res.status(400).json({ error: 'Destination is required for weather lookup.' });
+      }
+
+      const geo = await geocodeDestination(destination);
+      if (!geo) {
+        return res.status(404).json({
+          error: `Could not locate "${destination}" in the weather directory.`,
+        });
+      }
+
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const forecastMin = addDaysIso(todayIso, -2);
+      const forecastMax = addDaysIso(todayIso, 15);
+      const archiveMax = addDaysIso(todayIso, -3);
+
+      const cleanStart = /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : todayIso;
+      const cleanEnd = /^\d{4}-\d{2}-\d{2}$/.test(endDate) && endDate >= cleanStart ? endDate : cleanStart;
+
+      let mode: 'trip-dates' | 'historical' | 'current-outlook' = 'trip-dates';
+      let note = '';
+      let weatherUrl = '';
+
+      if (cleanEnd < forecastMin) {
+        // Past trip: fetch up to 5 days of recorded weather from Open-Meteo archive
+        const winStart = cleanStart;
+        const maxFive = addDaysIso(winStart, 4);
+        const winEnd = [maxFive, cleanEnd, archiveMax].sort()[0];
+        mode = 'historical';
+        note = `Recorded destination weather for trip dates (${winStart} – ${winEnd}).`;
+        weatherUrl = `https://archive-api.open-meteo.com/v1/archive?latitude=${geo.latitude}&longitude=${geo.longitude}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max&timezone=auto&start_date=${winStart}&end_date=${winEnd}`;
+      } else if (cleanStart > forecastMax) {
+        // Beyond 16-day forecast horizon: fetch live upcoming 5-day forecast as current destination outlook
+        mode = 'current-outlook';
+        note = `Trip dates (${cleanStart} – ${cleanEnd}) are beyond the 16-day forecast window; showing current 5-day outlook for ${geo.name}.`;
+        weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${geo.latitude}&longitude=${geo.longitude}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max&timezone=auto&forecast_days=5`;
+      } else {
+        // Overlaps forecast horizon: take up to 5 days for the trip starting within [forecastMin, forecastMax]
+        const winStart = cleanStart >= forecastMin ? cleanStart : forecastMin;
+        const maxEndByForecast = forecastMax;
+        const idealEnd = addDaysIso(winStart, 4);
+        const winEnd = idealEnd <= maxEndByForecast ? idealEnd : maxEndByForecast;
+        mode = 'trip-dates';
+        note = `5-day forecast aligned with trip dates starting ${winStart}.`;
+        weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${geo.latitude}&longitude=${geo.longitude}&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max&timezone=auto&start_date=${winStart}&end_date=${winEnd}`;
+      }
+
+      const weatherRes = await fetch(weatherUrl);
+      if (!weatherRes.ok) {
+        return res.status(502).json({ error: 'Public weather API returned an error.' });
+      }
+
+      const data = (await weatherRes.json()) as {
+        timezone?: string;
+        daily?: {
+          time?: string[];
+          weather_code?: number[];
+          temperature_2m_max?: number[];
+          temperature_2m_min?: number[];
+          precipitation_probability_max?: Array<number | null>;
+          precipitation_sum?: Array<number | null>;
+          wind_speed_10m_max?: Array<number | null>;
+        };
+      };
+
+      const times = data.daily?.time || [];
+      const codes = data.daily?.weather_code || [];
+      const maxTemps = data.daily?.temperature_2m_max || [];
+      const minTemps = data.daily?.temperature_2m_min || [];
+      const precipProbs = data.daily?.precipitation_probability_max || [];
+      const precipSums = data.daily?.precipitation_sum || [];
+      const windMaxes = data.daily?.wind_speed_10m_max || [];
+
+      const days = times.slice(0, 5).map((dateStr, idx) => {
+        const code = Number(codes[idx] ?? 0);
+        return {
+          date: dateStr,
+          weatherCode: code,
+          label: wmoCodeToLabel(code),
+          tempMaxC: Math.round(Number(maxTemps[idx] ?? 0)),
+          tempMinC: Math.round(Number(minTemps[idx] ?? 0)),
+          precipProbMax:
+            precipProbs[idx] !== undefined && precipProbs[idx] !== null
+              ? Math.round(Number(precipProbs[idx]))
+              : null,
+          precipMm:
+            precipSums[idx] !== undefined && precipSums[idx] !== null
+              ? Number(Number(precipSums[idx]).toFixed(1))
+              : null,
+          windMaxKmh:
+            windMaxes[idx] !== undefined && windMaxes[idx] !== null
+              ? Math.round(Number(windMaxes[idx]))
+              : null,
+        };
+      });
+
+      res.json({
+        destinationQuery: destination,
+        resolvedName: geo.admin1 ? `${geo.name}, ${geo.admin1}` : geo.name,
+        country: geo.country || '',
+        latitude: geo.latitude,
+        longitude: geo.longitude,
+        timezone: data.timezone || geo.timezone || 'UTC',
+        mode,
+        note,
+        fetchedAt: new Date().toISOString(),
+        days,
+      });
+    } catch (error: unknown) {
+      console.error('Weather lookup failed:', error);
+      res.status(500).json({ error: 'Unable to fetch destination weather forecast.' });
     }
   });
 

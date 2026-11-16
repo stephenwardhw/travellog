@@ -11,12 +11,14 @@ import {
   Plus,
 } from 'lucide-react';
 import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import { WeatherForecastStrip } from './WeatherForecastStrip';
 import type {
   BookingRecord,
   EventRecord,
   PdfRecord,
   PhotoRecord,
   TripRecord,
+  WeatherForecastResponse,
 } from '../types/journal';
 
 interface AgendaViewProps {
@@ -26,7 +28,13 @@ interface AgendaViewProps {
   photosByEvent: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
   pdfsByBooking?: Map<string, PdfRecord[]>;
+  weather?: WeatherForecastResponse | null;
+  weatherLoading?: boolean;
+  weatherError?: string | null;
+  isOnline?: boolean;
   canEdit: boolean;
+  onRefreshWeather?: () => void;
+  onEditTrip?: () => void;
   onSelectEvent: (event: EventRecord) => void;
   onSelectBooking?: (booking: BookingRecord) => void;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
@@ -95,7 +103,13 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   photosByEvent,
   pdfsByEvent,
   pdfsByBooking = new Map<string, PdfRecord[]>(),
+  weather = null,
+  weatherLoading = false,
+  weatherError = null,
+  isOnline = true,
   canEdit,
+  onRefreshWeather,
+  onEditTrip,
   onSelectEvent,
   onSelectBooking,
   onOpenPhoto,
@@ -250,6 +264,17 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
           )}
         </div>
       </div>
+
+      <WeatherForecastStrip
+        trip={trip}
+        weather={weather}
+        loading={weatherLoading}
+        error={weatherError}
+        canEdit={canEdit}
+        isOnline={isOnline}
+        onRefresh={() => onRefreshWeather?.()}
+        onEditTrip={onEditTrip}
+      />
 
       {sortedBookings.length > 0 && (
         <section className="space-y-2.5">
@@ -449,18 +474,18 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                             {ev.location}
                           </h4>
 
-                          {ev.journalEntry ? (
-                            <p className="text-sm text-slate-600 line-clamp-2 leading-relaxed">
-                              {ev.journalEntry}
-                            </p>
-                          ) : ev.details.trim() ? (
+                          {(ev.journalEntry.trim() || ev.details.trim()) && (
                             <div
                               className="text-sm text-slate-600 line-clamp-2 leading-relaxed [&_p]:inline [&_p+p]:ml-1.5 [&_ul]:inline [&_ol]:inline [&_li]:inline [&_li+li]:before:content-['·_'] [&_a]:text-teal-700 [&_a]:underline"
                               dangerouslySetInnerHTML={{
-                                __html: sanitizeHtml(ensureDisplayHtml(ev.details)),
+                                __html: sanitizeHtml(
+                                  ensureDisplayHtml(
+                                    ev.journalEntry.trim() ? ev.journalEntry : ev.details
+                                  )
+                                ),
                               }}
                             />
-                          ) : null}
+                          )}
 
                           {evPhotos.length > 0 && (
                             <div className="flex items-center gap-2 pt-1.5">

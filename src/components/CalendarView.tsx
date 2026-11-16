@@ -528,7 +528,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             ) : (
               <div className="divide-y divide-slate-100">
                 {selectedDayEvents.map((ev) => {
-                  const preview = ev.journalEntry || htmlToPlainText(ev.details);
+                  const preview =
+                    htmlToPlainText(ev.journalEntry) || htmlToPlainText(ev.details);
                   return (
                     <button
                       key={ev.clientId}

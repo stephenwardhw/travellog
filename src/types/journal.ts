@@ -101,6 +101,54 @@ export interface PdfRecord {
   syncStatus?: 'synced' | 'pending';
 }
 
+export type PackingCategory =
+  | 'Clothing'
+  | 'Documents'
+  | 'Electronics'
+  | 'Toiletries'
+  | 'Health & Safety'
+  | 'Gear & Comfort'
+  | 'Other';
+
+export interface PackingItemRecord {
+  clientId: string;
+  tripClientId: string;
+  name: string;
+  category: PackingCategory;
+  quantity: number;
+  packed: boolean;
+  isAutoSuggested: boolean;
+  reason: string;
+  updatedAt: string;
+  createdAt: string;
+  deletedAt: string | null;
+  syncStatus?: 'synced' | 'pending';
+}
+
+export interface WeatherDay {
+  date: string; // YYYY-MM-DD
+  weatherCode: number;
+  label: string;
+  tempMaxC: number;
+  tempMinC: number;
+  precipProbMax: number | null;
+  precipMm: number | null;
+  windMaxKmh: number | null;
+}
+
+export interface WeatherForecastResponse {
+  destinationQuery: string;
+  resolvedName: string;
+  country: string;
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  mode: 'trip-dates' | 'historical' | 'current-outlook';
+  note: string;
+  fetchedAt: string;
+  days: WeatherDay[];
+}
+
 export type SyncOpType =
   | 'trip_upsert'
   | 'trip_delete'
@@ -108,6 +156,8 @@ export type SyncOpType =
   | 'event_delete'
   | 'booking_upsert'
   | 'booking_delete'
+  | 'packing_upsert'
+  | 'packing_delete'
   | 'photo_upload'
   | 'photo_delete'
   | 'pdf_upload'
@@ -134,7 +184,7 @@ export interface AuthSession {
   user: LocalUser;
 }
 
-export type AppView = 'agenda' | 'calendar' | 'map' | 'search' | 'admin';
+export type AppView = 'agenda' | 'calendar' | 'map' | 'packing' | 'search' | 'admin';
 
 export interface SearchMatch {
   event?: EventRecord;

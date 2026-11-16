@@ -188,7 +188,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
       latitude: lat !== null && Number.isFinite(lat) ? lat : null,
       longitude: lng !== null && Number.isFinite(lng) ? lng : null,
       details: sanitizeHtml(details),
-      journalEntry,
+      journalEntry: sanitizeHtml(journalEntry),
     });
   };
 
@@ -432,13 +432,12 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
             <label className="block text-sm font-semibold text-slate-900 mb-1.5">
               Journal of the Day
             </label>
-            <textarea
-              rows={6}
+            <RichTextEditor
               value={journalEntry}
-              onChange={(e) => setJournalEntry(e.target.value)}
+              onChange={setJournalEntry}
               placeholder="Write your reflections, highlights, meals, people you met, and impressions of the day..."
-              disabled={readOnly}
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm leading-relaxed text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 disabled:bg-slate-50 disabled:text-slate-700"
+              readOnly={readOnly}
+              minHeightClass="min-h-[190px]"
             />
           </div>
 

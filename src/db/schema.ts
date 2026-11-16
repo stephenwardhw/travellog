@@ -1,5 +1,6 @@
 import { relations } from 'drizzle-orm';
 import {
+  boolean,
   doublePrecision,
   integer,
   pgTable,
@@ -131,6 +132,27 @@ export const tripShares = pgTable('trip_shares', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+export const packingItems = pgTable('packing_items', {
+  id: serial('id').primaryKey(),
+  clientId: text('client_id').notNull().unique(),
+  tripClientId: text('trip_client_id').notNull(),
+  tripId: integer('trip_id')
+    .references(() => trips.id, { onDelete: 'cascade' })
+    .notNull(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  name: text('name').notNull(),
+  category: text('category').notNull().default('Other'),
+  quantity: integer('quantity').notNull().default(1),
+  packed: boolean('packed').notNull().default(false),
+  isAutoSuggested: boolean('is_auto_suggested').notNull().default(false),
+  reason: text('reason').notNull().default(''),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at'),
+});
+
 export const appSettings = pgTable('app_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
@@ -142,6 +164,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   tripShares: many(tripShares),
   events: many(events),
   bookings: many(bookings),
+  packingItems: many(packingItems),
   photos: many(photos),
   pdfs: many(pdfs),
 }));
@@ -154,6 +177,18 @@ export const tripsRelations = relations(trips, ({ one, many }) => ({
   shares: many(tripShares),
   events: many(events),
   bookings: many(bookings),
+  packingItems: many(packingItems),
+}));
+
+export const packingItemsRelations = relations(packingItems, ({ one }) => ({
+  trip: one(trips, {
+    fields: [packingItems.tripId],
+    references: [trips.id],
+  }),
+  user: one(users, {
+    fields: [packingItems.userId],
+    references: [users.id],
+  }),
 }));
 
 export const tripSharesRelations = relations(tripShares, ({ one }) => ({

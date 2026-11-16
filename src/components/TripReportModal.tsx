@@ -366,6 +366,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               const evPhotos = includePhotos ? photosByEvent.get(ev.clientId) || [] : [];
               const evPdfs = includePdfs ? pdfsByEvent.get(ev.clientId) || [] : [];
               const sanitizedDetailsHtml = sanitizeHtml(ensureDisplayHtml(ev.details));
+              const sanitizedJournalHtml = sanitizeHtml(ensureDisplayHtml(ev.journalEntry));
 
               const photosHtml =
                 evPhotos.length > 0
@@ -404,8 +405,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                       : ''
                   }
                   ${
-                    includeJournal && ev.journalEntry.trim()
-                      ? `<div class="journal">${escapeHtml(ev.journalEntry)}</div>`
+                    includeJournal && sanitizedJournalHtml
+                      ? `<div class="journal-html">${sanitizedJournalHtml}</div>`
                       : ''
                   }
                   ${photosHtml}
@@ -549,16 +550,21 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     .details-html h3, .details-html h4 { font-size: 14px; font-weight: 600; color: #0f172a; margin: 8px 0 4px; }
     .details-html ul, .details-html ol { margin: 6px 0; padding-left: 20px; }
     .details-html blockquote { border-left: 3px solid #0f766e; margin: 6px 0; padding-left: 10px; color: #475569; font-style: italic; }
-    .details-html a { color: #0f766e; text-decoration: underline; }
-    .journal {
+    .details-html a, .journal-html a { color: #0f766e; text-decoration: underline; }
+    .journal, .journal-html {
       font-size: 14px;
       color: #1e293b;
       background: #f8fafc;
       border-radius: 8px;
       padding: 12px 14px;
       margin: 10px 0 0;
-      white-space: pre-wrap;
     }
+    .journal { white-space: pre-wrap; }
+    .journal-html p { margin: 0 0 8px; }
+    .journal-html p:last-child { margin-bottom: 0; }
+    .journal-html h3, .journal-html h4 { font-size: 15px; font-weight: 600; color: #0f172a; margin: 10px 0 4px; }
+    .journal-html ul, .journal-html ol { margin: 6px 0; padding-left: 20px; }
+    .journal-html blockquote { border-left: 3px solid #0f766e; margin: 6px 0; padding-left: 10px; color: #475569; font-style: italic; }
     .photo-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -980,6 +986,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                         const evPhotos = includePhotos ? photosByEvent.get(ev.clientId) || [] : [];
                         const evPdfs = includePdfs ? pdfsByEvent.get(ev.clientId) || [] : [];
                         const sanitizedDetailsHtml = sanitizeHtml(ensureDisplayHtml(ev.details));
+                        const sanitizedJournalHtml = sanitizeHtml(ensureDisplayHtml(ev.journalEntry));
 
                         return (
                           <article
@@ -1008,10 +1015,11 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                               />
                             )}
 
-                            {includeJournal && ev.journalEntry.trim() && (
-                              <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
-                                {ev.journalEntry}
-                              </div>
+                            {includeJournal && sanitizedJournalHtml && (
+                              <div
+                                className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-800 leading-relaxed [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-teal-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-teal-700 [&_a]:underline"
+                                dangerouslySetInnerHTML={{ __html: sanitizedJournalHtml }}
+                              />
                             )}
 
                             {evPhotos.length > 0 && (
