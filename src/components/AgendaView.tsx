@@ -1,16 +1,37 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CalendarPlus, ChevronRight, FileText, Image as ImageIcon, MapPin, Plus } from 'lucide-react';
-import type { EventRecord, PdfRecord, PhotoRecord, TripRecord } from '../types/journal';
+import {
+  BedDouble,
+  CalendarPlus,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
+  FileText,
+  Image as ImageIcon,
+  MapPin,
+  Plus,
+} from 'lucide-react';
+import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import type {
+  BookingRecord,
+  EventRecord,
+  PdfRecord,
+  PhotoRecord,
+  TripRecord,
+} from '../types/journal';
 
 interface AgendaViewProps {
   trip: TripRecord | null;
   events: EventRecord[];
+  bookings?: BookingRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
+  pdfsByBooking?: Map<string, PdfRecord[]>;
   canEdit: boolean;
   onSelectEvent: (event: EventRecord) => void;
+  onSelectBooking?: (booking: BookingRecord) => void;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   onAddStop: (defaultDate?: string) => void;
+  onAddBooking?: (defaultDate?: string) => void;
   onOpenCsvImport: () => void;
 }
 
@@ -70,12 +91,16 @@ function formatHeadingDate(iso: string): string {
 export const AgendaView: React.FC<AgendaViewProps> = ({
   trip,
   events,
+  bookings = [],
   photosByEvent,
   pdfsByEvent,
+  pdfsByBooking = new Map<string, PdfRecord[]>(),
   canEdit,
   onSelectEvent,
+  onSelectBooking,
   onOpenPhoto,
   onAddStop,
+  onAddBooking,
   onOpenCsvImport,
 }) => {
   const [filter, setFilter] = useState<'upcoming' | 'all' | 'journaled'>('upcoming');
@@ -105,6 +130,11 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   const upcomingCount = useMemo(
     () => events.filter((e) => e.eventDate >= todayIso).length,
     [events, todayIso]
+  );
+
+  const sortedBookings = useMemo(
+    () => [...bookings].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate)),
+    [bookings]
   );
 
   const grouped = useMemo(() => {
@@ -197,6 +227,17 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
             </button>
           </div>
 
+          {canEdit && onAddBooking && (
+            <button
+              type="button"
+              onClick={() => onAddBooking(trip.startDate)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 whitespace-nowrap shrink-0 min-h-[40px]"
+            >
+              <BedDouble className="w-3.5 h-3.5" />
+              Add Stay
+            </button>
+          )}
+
           {canEdit && (
             <button
               type="button"
@@ -209,6 +250,77 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
           )}
         </div>
       </div>
+
+      {sortedBookings.length > 0 && (
+        <section className="space-y-2.5">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+              <BedDouble className="w-4 h-4 text-indigo-700" />
+              Accommodations &amp; Stays ({sortedBookings.length})
+            </h3>
+            {canEdit && onAddBooking && (
+              <button
+                type="button"
+                onClick={() => onAddBooking(trip.startDate)}
+                className="text-xs font-medium text-indigo-700 hover:text-indigo-800 whitespace-nowrap"
+              >
+                + Add Stay
+              </button>
+            )}
+          </div>
+
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {sortedBookings.map((bk) => {
+              const isConfirmed = bk.status === 'confirmed';
+              const bkPdfs = pdfsByBooking.get(bk.clientId) || [];
+              return (
+                <button
+                  key={bk.clientId}
+                  type="button"
+                  onClick={() => onSelectBooking?.(bk)}
+                  className={`text-left rounded-xl border p-4 transition-colors space-y-1.5 ${
+                    isConfirmed
+                      ? 'border-indigo-200 bg-white hover:bg-indigo-50/40'
+                      : 'border-amber-200 border-dashed bg-amber-50/30 hover:bg-amber-50/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                    <span className="font-medium text-slate-600">
+                      {bk.checkInDate} – {bk.checkOutDate}
+                    </span>
+                    <span
+                      className={`inline-flex items-center gap-1 font-semibold shrink-0 ${
+                        isConfirmed ? 'text-indigo-700' : 'text-amber-700'
+                      }`}
+                    >
+                      {isConfirmed ? (
+                        <CheckCircle2 className="w-3 h-3" />
+                      ) : (
+                        <Clock className="w-3 h-3" />
+                      )}
+                      {isConfirmed ? 'Confirmed' : 'Unconfirmed'}
+                    </span>
+                  </div>
+                  <h4 className="text-sm font-semibold text-slate-900 truncate">{bk.name}</h4>
+                  {(bk.confirmationCode || bk.address || bkPdfs.length > 0) && (
+                    <p className="text-xs text-slate-500 truncate tabular-nums">
+                      {[
+                        bk.confirmationCode ? `#${bk.confirmationCode}` : '',
+                        bk.address,
+                        bkPdfs.length > 0
+                          ? `${bkPdfs.length} ${bkPdfs.length === 1 ? 'PDF' : 'PDFs'}`
+                          : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {events.length === 0 ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center">
@@ -337,11 +449,18 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                             {ev.location}
                           </h4>
 
-                          {(ev.journalEntry || ev.details) && (
+                          {ev.journalEntry ? (
                             <p className="text-sm text-slate-600 line-clamp-2 leading-relaxed">
-                              {ev.journalEntry || ev.details}
+                              {ev.journalEntry}
                             </p>
-                          )}
+                          ) : ev.details.trim() ? (
+                            <div
+                              className="text-sm text-slate-600 line-clamp-2 leading-relaxed [&_p]:inline [&_p+p]:ml-1.5 [&_ul]:inline [&_ol]:inline [&_li]:inline [&_li+li]:before:content-['·_'] [&_a]:text-teal-700 [&_a]:underline"
+                              dangerouslySetInnerHTML={{
+                                __html: sanitizeHtml(ensureDisplayHtml(ev.details)),
+                              }}
+                            />
+                          ) : null}
 
                           {evPhotos.length > 0 && (
                             <div className="flex items-center gap-2 pt-1.5">

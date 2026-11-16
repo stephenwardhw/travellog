@@ -76,13 +76,37 @@ export const photos = pgTable('photos', {
   deletedAt: timestamp('deleted_at'),
 });
 
+export const bookings = pgTable('bookings', {
+  id: serial('id').primaryKey(),
+  clientId: text('client_id').notNull().unique(),
+  tripClientId: text('trip_client_id').notNull(),
+  tripId: integer('trip_id')
+    .references(() => trips.id, { onDelete: 'cascade' })
+    .notNull(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  name: text('name').notNull(),
+  checkInDate: text('check_in_date').notNull(),
+  checkOutDate: text('check_out_date').notNull(),
+  status: text('status').notNull().default('unconfirmed'),
+  confirmationCode: text('confirmation_code').notNull().default(''),
+  address: text('address').notNull().default(''),
+  latitude: doublePrecision('latitude'),
+  longitude: doublePrecision('longitude'),
+  notes: text('notes').notNull().default(''),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at'),
+});
+
 export const pdfs = pgTable('pdfs', {
   id: serial('id').primaryKey(),
   clientId: text('client_id').notNull().unique(),
-  eventClientId: text('event_client_id').notNull(),
-  eventId: integer('event_id')
-    .references(() => events.id, { onDelete: 'cascade' })
-    .notNull(),
+  eventClientId: text('event_client_id').notNull().default(''),
+  eventId: integer('event_id').references(() => events.id, { onDelete: 'cascade' }),
+  bookingClientId: text('booking_client_id').notNull().default(''),
+  bookingId: integer('booking_id').references(() => bookings.id, { onDelete: 'cascade' }),
   userId: integer('user_id')
     .references(() => users.id, { onDelete: 'cascade' })
     .notNull(),
@@ -117,6 +141,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   trips: many(trips),
   tripShares: many(tripShares),
   events: many(events),
+  bookings: many(bookings),
   photos: many(photos),
   pdfs: many(pdfs),
 }));
@@ -128,6 +153,7 @@ export const tripsRelations = relations(trips, ({ one, many }) => ({
   }),
   shares: many(tripShares),
   events: many(events),
+  bookings: many(bookings),
 }));
 
 export const tripSharesRelations = relations(tripShares, ({ one }) => ({
@@ -154,6 +180,18 @@ export const eventsRelations = relations(events, ({ one, many }) => ({
   pdfs: many(pdfs),
 }));
 
+export const bookingsRelations = relations(bookings, ({ one, many }) => ({
+  trip: one(trips, {
+    fields: [bookings.tripId],
+    references: [trips.id],
+  }),
+  user: one(users, {
+    fields: [bookings.userId],
+    references: [users.id],
+  }),
+  pdfs: many(pdfs),
+}));
+
 export const photosRelations = relations(photos, ({ one }) => ({
   event: one(events, {
     fields: [photos.eventId],
@@ -169,6 +207,10 @@ export const pdfsRelations = relations(pdfs, ({ one }) => ({
   event: one(events, {
     fields: [pdfs.eventId],
     references: [events.id],
+  }),
+  booking: one(bookings, {
+    fields: [pdfs.bookingId],
+    references: [bookings.id],
   }),
   user: one(users, {
     fields: [pdfs.userId],

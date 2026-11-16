@@ -3,9 +3,9 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
-import { appSettings, events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
+import { appSettings, bookings, events, pdfs, photos, trips, tripShares } from './src/db/schema.ts';
 import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
 import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
 import {
@@ -20,6 +20,7 @@ import {
 } from './src/db/users.ts';
 import {
   getAccessibleTripsForUser,
+  getBookingAccessByClientId,
   getEventAccessByClientId,
   getTripAccessByClientId,
   getTripAccessForTripRow,
@@ -581,25 +582,39 @@ async function startServer() {
       const accessibleTrips = await getAccessibleTripsForUser(userId);
       const tripIds = accessibleTrips.map((t) => t.id);
 
-      const syncedEvents =
+      const [syncedEvents, syncedBookings] =
         tripIds.length > 0
-          ? await db.select().from(events).where(inArray(events.tripId, tripIds))
-          : [];
-
-      const eventIds = syncedEvents.map((e) => e.id);
-      const [syncedPhotos, syncedPdfs] =
-        eventIds.length > 0
           ? await Promise.all([
-              db.select().from(photos).where(inArray(photos.eventId, eventIds)),
-              db.select().from(pdfs).where(inArray(pdfs.eventId, eventIds)),
+              db.select().from(events).where(inArray(events.tripId, tripIds)),
+              db.select().from(bookings).where(inArray(bookings.tripId, tripIds)),
             ])
           : [[], []];
+
+      const eventIds = syncedEvents.map((e) => e.id);
+      const bookingIds = syncedBookings.map((b) => b.id);
+
+      const syncedPhotos =
+        eventIds.length > 0
+          ? await db.select().from(photos).where(inArray(photos.eventId, eventIds))
+          : [];
+
+      const pdfFilters = [];
+      if (eventIds.length > 0) pdfFilters.push(inArray(pdfs.eventId, eventIds));
+      if (bookingIds.length > 0) pdfFilters.push(inArray(pdfs.bookingId, bookingIds));
+
+      const syncedPdfs =
+        pdfFilters.length === 2
+          ? await db.select().from(pdfs).where(or(pdfFilters[0], pdfFilters[1]))
+          : pdfFilters.length === 1
+          ? await db.select().from(pdfs).where(pdfFilters[0])
+          : [];
 
       const calendarSettings = await getCalendarSettings();
 
       res.json({
         trips: accessibleTrips,
         events: syncedEvents,
+        bookings: syncedBookings,
         photos: syncedPhotos,
         pdfs: syncedPdfs,
         calendarSettings,
@@ -706,6 +721,11 @@ async function startServer() {
         .update(events)
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(events.tripId, updated.id));
+
+      await db
+        .update(bookings)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(bookings.tripId, updated.id));
 
       res.json({ deleted: true, clientId });
     } catch (error: unknown) {
@@ -825,6 +845,127 @@ async function startServer() {
     } catch (error: unknown) {
       console.error('Event delete failed:', error);
       res.status(500).json({ error: 'Failed to delete event.' });
+    }
+  });
+
+  app.post('/api/bookings/upsert', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const {
+        clientId,
+        tripClientId,
+        name,
+        checkInDate,
+        checkOutDate,
+        status,
+        confirmationCode,
+        address,
+        latitude,
+        longitude,
+        notes,
+        updatedAt,
+        deletedAt,
+      } = req.body || {};
+
+      if (!clientId || !tripClientId || !name || !checkInDate || !checkOutDate) {
+        return res.status(400).json({ error: 'Missing required booking fields.' });
+      }
+
+      const tripAccess = await getTripAccessByClientId(String(tripClientId), userId);
+      if (!tripAccess) {
+        return res.status(404).json({ error: 'Parent trip not found on server yet.' });
+      }
+      if (tripAccess.role === 'view') {
+        return res.status(403).json({ error: 'View-only access: cannot modify bookings in this trip.' });
+      }
+
+      const existing = await db
+        .select()
+        .from(bookings)
+        .where(eq(bookings.clientId, String(clientId)))
+        .limit(1);
+
+      if (existing.length > 0 && existing[0].tripId !== tripAccess.trip.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const now = updatedAt ? new Date(updatedAt) : new Date();
+      const deletedTimestamp = deletedAt ? new Date(deletedAt) : null;
+      const latNum =
+        latitude !== null && latitude !== undefined && latitude !== '' ? Number(latitude) : null;
+      const lngNum =
+        longitude !== null && longitude !== undefined && longitude !== '' ? Number(longitude) : null;
+      const cleanStatus = status === 'confirmed' ? 'confirmed' : 'unconfirmed';
+
+      const [saved] = await db
+        .insert(bookings)
+        .values({
+          clientId: String(clientId),
+          tripClientId: String(tripClientId),
+          tripId: tripAccess.trip.id,
+          userId,
+          name: String(name),
+          checkInDate: String(checkInDate),
+          checkOutDate: String(checkOutDate),
+          status: cleanStatus,
+          confirmationCode: String(confirmationCode || ''),
+          address: String(address || ''),
+          latitude: Number.isFinite(latNum) ? latNum : null,
+          longitude: Number.isFinite(lngNum) ? lngNum : null,
+          notes: String(notes || ''),
+          updatedAt: now,
+          deletedAt: deletedTimestamp,
+        })
+        .onConflictDoUpdate({
+          target: bookings.clientId,
+          set: {
+            tripClientId: String(tripClientId),
+            tripId: tripAccess.trip.id,
+            name: String(name),
+            checkInDate: String(checkInDate),
+            checkOutDate: String(checkOutDate),
+            status: cleanStatus,
+            confirmationCode: String(confirmationCode || ''),
+            address: String(address || ''),
+            latitude: Number.isFinite(latNum) ? latNum : null,
+            longitude: Number.isFinite(lngNum) ? lngNum : null,
+            notes: String(notes || ''),
+            updatedAt: now,
+            deletedAt: deletedTimestamp,
+          },
+        })
+        .returning();
+
+      res.json(saved);
+    } catch (error: unknown) {
+      console.error('Booking upsert failed:', error);
+      res.status(500).json({ error: 'Failed to save booking.' });
+    }
+  });
+
+  app.delete('/api/bookings/:clientId', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const access = await getBookingAccessByClientId(clientId, userId);
+
+      if (!access) {
+        return res.status(404).json({ error: 'Booking not found.' });
+      }
+      if (access.role === 'view') {
+        return res.status(403).json({ error: 'View-only access: cannot delete bookings in this trip.' });
+      }
+
+      const now = new Date();
+      await db
+        .update(bookings)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(bookings.id, access.booking.id));
+
+      res.json({ deleted: true, clientId });
+    } catch (error: unknown) {
+      console.error('Booking delete failed:', error);
+      res.status(500).json({ error: 'Failed to delete booking.' });
     }
   });
 
@@ -1023,33 +1164,54 @@ async function startServer() {
     try {
       const userId = req.dbUserId!;
       const file = req.file;
-      const { clientId, eventClientId, extractedText } = req.body || {};
+      const { clientId, eventClientId, bookingClientId, extractedText } = req.body || {};
 
-      if (!file || !clientId || !eventClientId) {
+      const cleanEventClientId = typeof eventClientId === 'string' ? eventClientId.trim() : '';
+      const cleanBookingClientId =
+        typeof bookingClientId === 'string' ? bookingClientId.trim() : '';
+
+      if (!file || !clientId || (!cleanEventClientId && !cleanBookingClientId)) {
         if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
         return res.status(400).json({ error: 'Missing PDF file or metadata.' });
       }
 
-      const eventAccess = await getEventAccessByClientId(String(eventClientId), userId);
+      let eventId: number | null = null;
+      let bookingId: number | null = null;
+      let role: 'owner' | 'edit' | 'view' | null = null;
 
-      if (!eventAccess) {
-        if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        return res.status(404).json({ error: 'Parent event not found on server yet.' });
+      if (cleanEventClientId) {
+        const eventAccess = await getEventAccessByClientId(cleanEventClientId, userId);
+        if (!eventAccess) {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          return res.status(404).json({ error: 'Parent event not found on server yet.' });
+        }
+        eventId = eventAccess.event.id;
+        role = eventAccess.role;
+      } else if (cleanBookingClientId) {
+        const bookingAccess = await getBookingAccessByClientId(cleanBookingClientId, userId);
+        if (!bookingAccess) {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          return res.status(404).json({ error: 'Parent booking not found on server yet.' });
+        }
+        bookingId = bookingAccess.booking.id;
+        role = bookingAccess.role;
       }
-      if (eventAccess.role === 'view') {
+
+      if (role === 'view' || !role) {
         if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
         return res.status(403).json({ error: 'View-only access: cannot upload PDFs to this trip.' });
       }
 
-      const parentEvent = eventAccess.event;
       const relativeDiskPath = path.relative(process.cwd(), file.path);
 
       const [saved] = await db
         .insert(pdfs)
         .values({
           clientId: String(clientId),
-          eventClientId: String(eventClientId),
-          eventId: parentEvent.id,
+          eventClientId: cleanEventClientId,
+          eventId,
+          bookingClientId: cleanBookingClientId,
+          bookingId,
           userId,
           filename: file.originalname || path.basename(file.path),
           mimeType: file.mimetype || 'application/pdf',
@@ -1090,7 +1252,11 @@ async function startServer() {
         return res.status(404).json({ error: 'PDF not found.' });
       }
 
-      const access = await getEventAccessByClientId(pdf.eventClientId, userId);
+      const access = pdf.eventClientId
+        ? await getEventAccessByClientId(pdf.eventClientId, userId)
+        : pdf.bookingClientId
+        ? await getBookingAccessByClientId(pdf.bookingClientId, userId)
+        : null;
       if (!access) {
         return res.status(403).json({ error: 'Forbidden' });
       }
@@ -1123,7 +1289,11 @@ async function startServer() {
         return res.status(404).json({ error: 'PDF not found.' });
       }
 
-      const access = await getEventAccessByClientId(pdf.eventClientId, userId);
+      const access = pdf.eventClientId
+        ? await getEventAccessByClientId(pdf.eventClientId, userId)
+        : pdf.bookingClientId
+        ? await getBookingAccessByClientId(pdf.bookingClientId, userId)
+        : null;
       if (!access || access.role === 'view') {
         return res.status(403).json({ error: 'You do not have permission to delete this PDF.' });
       }

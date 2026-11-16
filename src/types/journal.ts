@@ -65,9 +65,30 @@ export interface PhotoRecord {
   syncStatus?: 'synced' | 'pending';
 }
 
+export type BookingStatus = 'confirmed' | 'unconfirmed';
+
+export interface BookingRecord {
+  clientId: string;
+  tripClientId: string;
+  name: string;
+  checkInDate: string; // YYYY-MM-DD
+  checkOutDate: string; // YYYY-MM-DD
+  status: BookingStatus;
+  confirmationCode: string;
+  address: string;
+  latitude: number | null;
+  longitude: number | null;
+  notes: string;
+  updatedAt: string;
+  createdAt: string;
+  deletedAt: string | null;
+  syncStatus?: 'synced' | 'pending';
+}
+
 export interface PdfRecord {
   clientId: string;
   eventClientId: string;
+  bookingClientId?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;
@@ -85,6 +106,8 @@ export type SyncOpType =
   | 'trip_delete'
   | 'event_upsert'
   | 'event_delete'
+  | 'booking_upsert'
+  | 'booking_delete'
   | 'photo_upload'
   | 'photo_delete'
   | 'pdf_upload'
@@ -114,9 +137,10 @@ export interface AuthSession {
 export type AppView = 'agenda' | 'calendar' | 'map' | 'search' | 'admin';
 
 export interface SearchMatch {
-  event: EventRecord;
+  event?: EventRecord;
+  booking?: BookingRecord;
   trip: TripRecord | undefined;
-  source: 'location' | 'details' | 'journal' | 'pdf';
+  source: 'location' | 'details' | 'journal' | 'booking' | 'pdf';
   pdfFilename?: string;
   pdfClientId?: string;
   snippet: string;

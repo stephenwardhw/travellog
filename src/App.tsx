@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BedDouble,
   Calendar as CalendarIcon,
   ChevronDown,
   Edit3,
@@ -26,6 +27,8 @@ import {
   DEFAULT_CALENDAR_SETTINGS,
   type AppView,
   type AuthSession,
+  type BookingRecord,
+  type BookingStatus,
   type CalendarThemeSettings,
   type EventRecord,
   type PdfRecord,
@@ -44,6 +47,7 @@ import { TripShareModal } from './components/TripShareModal';
 import { TripReportModal } from './components/TripReportModal';
 import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
+import { BookingDetailDrawer } from './components/BookingDetailDrawer';
 import { PhotoLightbox } from './components/PhotoLightbox';
 
 function makeId(): string {
@@ -60,6 +64,7 @@ export default function App() {
   const [view, setView] = useState<AppView>('agenda');
   const [trips, setTrips] = useState<TripRecord[]>([]);
   const [events, setEvents] = useState<EventRecord[]>([]);
+  const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [pdfs, setPdfs] = useState<PdfRecord[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -88,6 +93,15 @@ export default function App() {
     lat: number;
     lng: number;
   } | null>(null);
+
+  const [bookingDrawerOpen, setBookingDrawerOpen] = useState(false);
+  const [selectedBooking, setSelectedBooking] = useState<BookingRecord | null>(null);
+  const [bookingDefaultDate, setBookingDefaultDate] = useState<string | undefined>(undefined);
+  const [bookingDefaultCoords, setBookingDefaultCoords] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+
   const [lightboxState, setLightboxState] = useState<{
     photos: PhotoRecord[];
     initialIndex: number;
@@ -122,6 +136,7 @@ export default function App() {
     const [
       allTrips,
       allEvents,
+      allBookings,
       allPhotos,
       allPdfs,
       queue,
@@ -132,6 +147,7 @@ export default function App() {
     ] = await Promise.all([
       offlineDb.getAllTrips(),
       offlineDb.getAllEvents(),
+      offlineDb.getAllBookings(),
       offlineDb.getAllPhotos(),
       offlineDb.getAllPdfs(),
       offlineDb.getQueue(),
@@ -144,6 +160,7 @@ export default function App() {
     const sortedTrips = [...allTrips].sort((a, b) => b.startDate.localeCompare(a.startDate));
     setTrips(sortedTrips);
     setEvents(allEvents);
+    setBookings(allBookings);
     setPhotos(allPhotos);
     setPdfs(allPdfs);
     setPendingCount(queue.length);
@@ -304,6 +321,11 @@ export default function App() {
     return events.filter((e) => e.tripClientId === activeTrip.clientId);
   }, [events, activeTrip]);
 
+  const activeTripBookings = useMemo(() => {
+    if (!activeTrip) return [];
+    return bookings.filter((b) => b.tripClientId === activeTrip.clientId);
+  }, [bookings, activeTrip]);
+
   const photosByEvent = useMemo(() => {
     const map = new Map<string, PhotoRecord[]>();
     for (const p of photos) {
@@ -317,9 +339,21 @@ export default function App() {
   const pdfsByEvent = useMemo(() => {
     const map = new Map<string, PdfRecord[]>();
     for (const p of pdfs) {
+      if (!p.eventClientId) continue;
       const list = map.get(p.eventClientId) || [];
       list.push(p);
       map.set(p.eventClientId, list);
+    }
+    return map;
+  }, [pdfs]);
+
+  const pdfsByBooking = useMemo(() => {
+    const map = new Map<string, PdfRecord[]>();
+    for (const p of pdfs) {
+      if (!p.bookingClientId) continue;
+      const list = map.get(p.bookingClientId) || [];
+      list.push(p);
+      map.set(p.bookingClientId, list);
     }
     return map;
   }, [pdfs]);
@@ -569,6 +603,131 @@ export default function App() {
     triggerSync();
   };
 
+  const handleSaveBooking = async (data: {
+    clientId?: string;
+    name: string;
+    checkInDate: string;
+    checkOutDate: string;
+    status: BookingStatus;
+    confirmationCode: string;
+    address: string;
+    latitude: number | null;
+    longitude: number | null;
+    notes: string;
+  }): Promise<BookingRecord> => {
+    const now = new Date().toISOString();
+    let tripId = activeTrip?.clientId;
+
+    if (!tripId) {
+      const fallbackTrip: TripRecord = {
+        clientId: makeId(),
+        title: 'My Travel Journal',
+        destination: data.name,
+        startDate: data.checkInDate,
+        endDate: data.checkOutDate,
+        description: '',
+        accessRole: 'owner',
+        ownerName: session?.user.name || session?.user.email || '',
+        ownerEmail: session?.user.email || '',
+        createdAt: now,
+        updatedAt: now,
+        deletedAt: null,
+        syncStatus: 'pending',
+      };
+      await offlineDb.putTrip(fallbackTrip);
+      await offlineDb.enqueue({
+        type: 'trip_upsert',
+        clientId: fallbackTrip.clientId,
+        createdAt: now,
+      });
+      tripId = fallbackTrip.clientId;
+      await selectActiveTrip(tripId);
+    }
+
+    const existing = data.clientId ? await offlineDb.getBookingRaw(data.clientId) : undefined;
+    const effectiveTripId = existing?.tripClientId || tripId;
+    if (
+      !canEditTripById(effectiveTripId) &&
+      activeTrip?.clientId === effectiveTripId &&
+      !canEditActiveTrip
+    ) {
+      throw new Error('This shared trip is view-only and cannot be edited.');
+    }
+
+    const saved: BookingRecord = {
+      clientId: existing?.clientId || data.clientId || makeId(),
+      tripClientId: effectiveTripId,
+      name: data.name,
+      checkInDate: data.checkInDate,
+      checkOutDate: data.checkOutDate,
+      status: data.status,
+      confirmationCode: data.confirmationCode,
+      address: data.address,
+      latitude: data.latitude,
+      longitude: data.longitude,
+      notes: data.notes,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      deletedAt: null,
+      syncStatus: 'pending',
+    };
+
+    await offlineDb.putBooking(saved);
+    await offlineDb.enqueue({
+      type: 'booking_upsert',
+      clientId: saved.clientId,
+      createdAt: now,
+    });
+    setSelectedBooking(saved);
+    await loadFromLocalDb();
+    triggerSync();
+    return saved;
+  };
+
+  const handleDeleteBooking = async (clientId: string) => {
+    const existing = await offlineDb.getBookingRaw(clientId);
+    if (!existing) return;
+    if (!canEditTripById(existing.tripClientId)) return;
+    const now = new Date().toISOString();
+    await offlineDb.putBooking({
+      ...existing,
+      deletedAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+    await offlineDb.enqueue({
+      type: 'booking_delete',
+      clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleAssignBookingCoordinates = async (
+    booking: BookingRecord,
+    lat: number,
+    lng: number
+  ) => {
+    if (!canEditTripById(booking.tripClientId)) return;
+    const now = new Date().toISOString();
+    const updated: BookingRecord = {
+      ...booking,
+      latitude: lat,
+      longitude: lng,
+      updatedAt: now,
+      syncStatus: 'pending',
+    };
+    await offlineDb.putBooking(updated);
+    await offlineDb.enqueue({
+      type: 'booking_upsert',
+      clientId: updated.clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
   const handleAddPhotos = async (eventClientId: string, fileList: FileList) => {
     const now = new Date().toISOString();
     for (const file of Array.from(fileList)) {
@@ -642,6 +801,38 @@ export default function App() {
       const pdf: PdfRecord = {
         clientId: makeId(),
         eventClientId,
+        bookingClientId: '',
+        filename: file.name,
+        mimeType: file.type || 'application/pdf',
+        sizeBytes: file.size,
+        extractedText,
+        createdAt: now,
+        deletedAt: null,
+        blob: file,
+        hasLocalFile: true,
+        syncStatus: 'pending',
+      };
+      await offlineDb.putPdf(pdf);
+      await offlineDb.enqueue({
+        type: 'pdf_upload',
+        clientId: pdf.clientId,
+        createdAt: now,
+      });
+    }
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleAddBookingPdfs = async (
+    bookingClientId: string,
+    items: Array<{ file: File; extractedText: string }>
+  ) => {
+    const now = new Date().toISOString();
+    for (const { file, extractedText } of items) {
+      const pdf: PdfRecord = {
+        clientId: makeId(),
+        eventClientId: '',
+        bookingClientId,
         filename: file.name,
         mimeType: file.type || 'application/pdf',
         sizeBytes: file.size,
@@ -716,6 +907,30 @@ export default function App() {
     setDrawerOpen(true);
   };
 
+  const openNewBooking = (defaultDate?: string, coords?: { lat: number; lng: number }) => {
+    if (!activeTrip && !defaultDate) {
+      setEditingTrip(null);
+      setTripModalOpen(true);
+      return;
+    }
+    if (activeTrip && !canEditActiveTrip) {
+      setEditingTrip(null);
+      setTripModalOpen(true);
+      return;
+    }
+    setSelectedBooking(null);
+    setBookingDefaultDate(defaultDate || activeTrip?.startDate);
+    setBookingDefaultCoords(coords || null);
+    setBookingDrawerOpen(true);
+  };
+
+  const openExistingBooking = (booking: BookingRecord) => {
+    setSelectedBooking(booking);
+    setBookingDefaultDate(undefined);
+    setBookingDefaultCoords(null);
+    setBookingDrawerOpen(true);
+  };
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center text-sm text-slate-500">
@@ -737,6 +952,16 @@ export default function App() {
     : activeTrip;
   const drawerReadOnly = (drawerTrip?.accessRole || 'owner') === 'view';
   const drawerOwnerLabel = drawerTrip?.ownerName || drawerTrip?.ownerEmail || '';
+
+  const activeBookingPdfs = selectedBooking
+    ? pdfsByBooking.get(selectedBooking.clientId) || []
+    : [];
+  const bookingDrawerTrip = selectedBooking
+    ? trips.find((t) => t.clientId === selectedBooking.tripClientId) || activeTrip
+    : activeTrip;
+  const bookingDrawerReadOnly = (bookingDrawerTrip?.accessRole || 'owner') === 'view';
+  const bookingDrawerOwnerLabel =
+    bookingDrawerTrip?.ownerName || bookingDrawerTrip?.ownerEmail || '';
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col pb-20 md:pb-10 print:pb-0 print:bg-white">
@@ -907,6 +1132,21 @@ export default function App() {
                   >
                     <Edit3 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                     Edit Trip
+                  </button>
+                )}
+
+                {activeTrip && canEditActiveTrip && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      openNewBooking(activeTrip.startDate);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <BedDouble className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                    New Booking / Stay
                   </button>
                 )}
 
@@ -1104,6 +1344,17 @@ export default function App() {
               </button>
             )}
 
+            {activeTrip && canEditActiveTrip && (
+              <button
+                type="button"
+                onClick={() => openNewBooking(activeTrip.startDate)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800 hover:bg-indigo-100 whitespace-nowrap min-h-[40px]"
+              >
+                <BedDouble className="w-3.5 h-3.5 text-indigo-700" />
+                Add Stay
+              </button>
+            )}
+
             {activeTrip && (
               <button
                 type="button"
@@ -1219,14 +1470,18 @@ export default function App() {
           <AgendaView
             trip={activeTrip}
             events={activeTripEvents}
+            bookings={activeTripBookings}
             photosByEvent={photosByEvent}
             pdfsByEvent={pdfsByEvent}
+            pdfsByBooking={pdfsByBooking}
             canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
+            onSelectBooking={openExistingBooking}
             onOpenPhoto={(list, index, title) =>
               setLightboxState({ photos: list, initialIndex: index, title })
             }
             onAddStop={(date) => openNewStop(date)}
+            onAddBooking={(date) => openNewBooking(date)}
             onOpenCsvImport={() => setCsvModalOpen(true)}
           />
         )}
@@ -1235,10 +1490,13 @@ export default function App() {
           <CalendarView
             trip={activeTrip}
             events={activeTripEvents}
+            bookings={activeTripBookings}
             canEdit={canEditActiveTrip}
             calendarSettings={calendarSettings}
             onSelectEvent={openExistingEvent}
             onAddStop={(date) => openNewStop(date)}
+            onSelectBooking={openExistingBooking}
+            onAddBooking={(date) => openNewBooking(date)}
           />
         )}
 
@@ -1246,10 +1504,13 @@ export default function App() {
           <CartoMapView
             trip={activeTrip}
             events={activeTripEvents}
+            bookings={activeTripBookings}
             photosByEvent={photosByEvent}
             canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
+            onSelectBooking={openExistingBooking}
             onAssignCoordinates={handleAssignCoordinates}
+            onAssignBookingCoordinates={handleAssignBookingCoordinates}
             onAddStopAtCoords={(lat, lng) => openNewStop(activeTrip?.startDate, { lat, lng })}
           />
         )}
@@ -1258,8 +1519,10 @@ export default function App() {
           <SearchView
             trips={trips}
             events={events}
+            bookings={bookings}
             pdfs={pdfs}
             onSelectEvent={openExistingEvent}
+            onSelectBooking={openExistingBooking}
           />
         )}
 
@@ -1331,8 +1594,10 @@ export default function App() {
         open={reportModalOpen}
         trip={activeTrip}
         events={activeTripEvents}
+        bookings={activeTripBookings}
         photosByEvent={photosByEvent}
         pdfsByEvent={pdfsByEvent}
+        pdfsByBooking={pdfsByBooking}
         authToken={session.token}
         onOpenPhoto={(list, index, title) =>
           setLightboxState({ photos: list, initialIndex: index, title })
@@ -1367,6 +1632,21 @@ export default function App() {
         onOpenPhoto={(list, index, title) =>
           setLightboxState({ photos: list, initialIndex: index, title })
         }
+      />
+
+      <BookingDetailDrawer
+        open={bookingDrawerOpen}
+        booking={selectedBooking}
+        defaultDate={bookingDefaultDate}
+        defaultCoords={bookingDefaultCoords}
+        pdfs={activeBookingPdfs}
+        readOnly={bookingDrawerReadOnly}
+        ownerLabel={bookingDrawerOwnerLabel}
+        onClose={() => setBookingDrawerOpen(false)}
+        onSaveBooking={handleSaveBooking}
+        onDeleteBooking={handleDeleteBooking}
+        onAddBookingPdfs={handleAddBookingPdfs}
+        onDeletePdf={handleDeletePdf}
       />
 
       {lightboxState && (

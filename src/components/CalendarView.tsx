@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { BedDouble, CheckCircle2, ChevronLeft, ChevronRight, Clock, Plus } from 'lucide-react';
+import { htmlToPlainText } from '../lib/htmlSanitizer';
 import {
   DEFAULT_CALENDAR_SETTINGS,
+  type BookingRecord,
   type CalendarThemeSettings,
   type EventRecord,
   type TripRecord,
@@ -10,10 +12,13 @@ import {
 interface CalendarViewProps {
   trip: TripRecord | null;
   events: EventRecord[];
+  bookings?: BookingRecord[];
   canEdit: boolean;
   calendarSettings?: CalendarThemeSettings;
   onSelectEvent: (event: EventRecord) => void;
   onAddStop: (date: string) => void;
+  onSelectBooking?: (booking: BookingRecord) => void;
+  onAddBooking?: (date: string) => void;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -29,29 +34,60 @@ function isDarkHexColor(hex: string): boolean {
   return luminance < 140;
 }
 
+function expandDateRange(startIso: string, endIso: string): string[] {
+  const [sy, sm, sd] = startIso.split('-').map(Number);
+  const [ey, em, ed] = endIso.split('-').map(Number);
+  if (!sy || !sm || !sd || !ey || !em || !ed) return [];
+  const start = new Date(Date.UTC(sy, sm - 1, sd));
+  const end = new Date(Date.UTC(ey, em - 1, ed));
+  if (end < start) return [startIso];
+
+  const dates: string[] = [];
+  const cursor = new Date(start);
+  let guard = 0;
+  while (cursor <= end && guard < 366) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+    guard++;
+  }
+  return dates;
+}
+
 export const CalendarView: React.FC<CalendarViewProps> = ({
   trip,
   events,
+  bookings = [],
   canEdit,
   calendarSettings = DEFAULT_CALENDAR_SETTINGS,
   onSelectEvent,
   onAddStop,
+  onSelectBooking,
+  onAddBooking,
 }) => {
   const initialDate = useMemo(() => {
-    const ref = events[0]?.eventDate || trip?.startDate || new Date().toISOString().slice(0, 10);
+    const ref =
+      events[0]?.eventDate ||
+      bookings[0]?.checkInDate ||
+      trip?.startDate ||
+      new Date().toISOString().slice(0, 10);
     const [y, m] = ref.split('-').map(Number);
     return { year: y || new Date().getFullYear(), month: (m || 1) - 1 };
   }, [trip?.clientId]);
 
   const [cursor, setCursor] = useState(initialDate);
   const [selectedDay, setSelectedDay] = useState<string>(
-    events[0]?.eventDate || trip?.startDate || new Date().toISOString().slice(0, 10)
+    events[0]?.eventDate ||
+      bookings[0]?.checkInDate ||
+      trip?.startDate ||
+      new Date().toISOString().slice(0, 10)
   );
 
   useEffect(() => {
     setCursor(initialDate);
     if (events[0]?.eventDate) {
       setSelectedDay(events[0].eventDate);
+    } else if (bookings[0]?.checkInDate) {
+      setSelectedDay(bookings[0].checkInDate);
     } else if (trip?.startDate) {
       setSelectedDay(trip.startDate);
     }
@@ -69,6 +105,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     }
     return map;
   }, [events]);
+
+  const bookingsByDate = useMemo(() => {
+    const map = new Map<string, BookingRecord[]>();
+    const sorted = [...bookings].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate));
+    for (const booking of sorted) {
+      for (const dayIso of expandDateRange(booking.checkInDate, booking.checkOutDate)) {
+        const list = map.get(dayIso) || [];
+        list.push(booking);
+        map.set(dayIso, list);
+      }
+    }
+    return map;
+  }, [bookings]);
 
   const calendarCells = useMemo(() => {
     const firstOfMonth = new Date(cursor.year, cursor.month, 1);
@@ -115,6 +164,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
   };
 
   const selectedDayEvents = eventsByDate.get(selectedDay) || [];
+  const selectedDayBookings = bookingsByDate.get(selectedDay) || [];
 
   return (
     <div className="space-y-6">
@@ -126,6 +176,9 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           {trip && (
             <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
               {trip.title} · {trip.startDate} to {trip.endDate}
+              {bookings.length > 0
+                ? ` · ${bookings.length} ${bookings.length === 1 ? 'stay' : 'stays'}`
+                : ''}
             </p>
           )}
         </div>
@@ -185,6 +238,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
           <div className="grid grid-cols-7 divide-x divide-y divide-slate-100">
             {calendarCells.map((cell) => {
               const dayEvents = eventsByDate.get(cell.iso) || [];
+              const dayBookings = bookingsByDate.get(cell.iso) || [];
               const hasEvents = dayEvents.length > 0;
               const isSelected = cell.iso === selectedDay;
               const inTripRange =
@@ -221,11 +275,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                     }
                   }}
                   style={cellBgStyle}
-                  className={`min-h-[76px] sm:min-h-[104px] p-1.5 sm:p-2 cursor-pointer transition-all flex flex-col ${cellBgClass} ${
+                  className={`min-h-[82px] sm:min-h-[112px] p-1.5 sm:p-2 cursor-pointer transition-all flex flex-col ${cellBgClass} ${
                     isSelected ? 'ring-2 ring-inset ring-teal-700' : ''
                   }`}
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-1">
                     <span
                       className={`text-xs font-medium tabular-nums ${
                         isDarkBg
@@ -239,19 +293,66 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                     >
                       {cell.day}
                     </span>
-                    {dayEvents.length > 0 && (
-                      <span
-                        className={`sm:hidden text-[10px] font-semibold tabular-nums ${
-                          isDarkBg ? 'text-white/90' : 'text-slate-800'
-                        }`}
-                      >
-                        {dayEvents.length}
-                      </span>
-                    )}
+                    <div className="sm:hidden flex items-center gap-1">
+                      {dayBookings.length > 0 && (
+                        <span
+                          className={`inline-block w-2 h-2 rounded-xs ${
+                            dayBookings.some((b) => b.status === 'confirmed')
+                              ? 'bg-indigo-700'
+                              : 'bg-amber-500'
+                          }`}
+                          title={dayBookings.map((b) => b.name).join(', ')}
+                        />
+                      )}
+                      {dayEvents.length > 0 && (
+                        <span
+                          className={`text-[10px] font-semibold tabular-nums ${
+                            isDarkBg ? 'text-white/90' : 'text-slate-800'
+                          }`}
+                        >
+                          {dayEvents.length}
+                        </span>
+                      )}
+                    </div>
                   </div>
 
+                  {/* Multiday Stays & Stops */}
                   <div className="hidden sm:flex flex-col gap-1 mt-1.5 overflow-hidden">
-                    {dayEvents.slice(0, 2).map((ev) => (
+                    {dayBookings.slice(0, 2).map((bk) => {
+                      const isConfirmed = bk.status === 'confirmed';
+                      const stayTag =
+                        bk.checkInDate === bk.checkOutDate
+                          ? ''
+                          : cell.iso === bk.checkInDate
+                          ? 'In: '
+                          : cell.iso === bk.checkOutDate
+                          ? 'Out: '
+                          : '';
+                      return (
+                        <button
+                          key={bk.clientId}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectBooking?.(bk);
+                          }}
+                          className={`w-full text-left truncate rounded px-1.5 py-0.5 text-[10px] font-semibold flex items-center gap-1 transition-colors ${
+                            isConfirmed
+                              ? 'bg-indigo-700 text-white hover:bg-indigo-800'
+                              : 'bg-amber-100 text-amber-950 border border-dashed border-amber-500 hover:bg-amber-200'
+                          }`}
+                          title={`${bk.name} (${bk.status}) · ${bk.checkInDate} to ${bk.checkOutDate}`}
+                        >
+                          <BedDouble className="w-2.5 h-2.5 shrink-0" />
+                          <span className="truncate">
+                            {stayTag}
+                            {bk.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+
+                    {dayEvents.slice(0, dayBookings.length > 0 ? 1 : 2).map((ev) => (
                       <button
                         key={ev.clientId}
                         type="button"
@@ -266,13 +367,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                         {ev.location}
                       </button>
                     ))}
-                    {dayEvents.length > 2 && (
+
+                    {dayEvents.length + dayBookings.length > 2 && (
                       <span
                         className={`text-[10px] font-medium px-1 tabular-nums ${
                           isDarkBg ? 'text-white/90' : 'text-slate-700'
                         }`}
                       >
-                        +{dayEvents.length - 2} more
+                        +
+                        {dayEvents.length +
+                          dayBookings.length -
+                          (Math.min(dayBookings.length, 2) +
+                            Math.min(dayEvents.length, dayBookings.length > 0 ? 1 : 2))}{' '}
+                        more
                       </span>
                     )}
                   </div>
@@ -281,7 +388,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             })}
           </div>
 
-          <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-2.5 flex flex-wrap items-center gap-4 text-[11px] text-slate-600">
+          <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-600">
             <span className="inline-flex items-center gap-1.5">
               <span
                 className="w-3 h-3 rounded border border-slate-300 inline-block"
@@ -298,11 +405,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                 Trip dates
               </span>
             )}
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-indigo-700 inline-block" />
+              Confirmed stay
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="w-3 h-3 rounded bg-amber-100 border border-dashed border-amber-500 inline-block" />
+              Unconfirmed stay
+            </span>
           </div>
         </div>
 
-        <aside className="lg:col-span-4 rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
-          <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+        <aside className="lg:col-span-4 rounded-2xl border border-slate-200 bg-white p-5 space-y-5">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-3">
             <div>
               <p className="text-xs text-slate-500">Selected Date</p>
               <h3 className="text-base font-semibold text-slate-900 tabular-nums">
@@ -310,44 +425,130 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
               </h3>
             </div>
             {canEdit && (
-              <button
-                type="button"
-                onClick={() => onAddStop(selectedDay)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-800 min-h-[40px] whitespace-nowrap shrink-0"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                Add Stop
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {onAddBooking && (
+                  <button
+                    type="button"
+                    onClick={() => onAddBooking(selectedDay)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 min-h-[38px] whitespace-nowrap"
+                  >
+                    <BedDouble className="w-3.5 h-3.5" />
+                    Add Stay
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => onAddStop(selectedDay)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-800 min-h-[38px] whitespace-nowrap"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Add Stop
+                </button>
+              </div>
             )}
           </div>
 
-          {selectedDayEvents.length === 0 ? (
-            <p className="text-sm text-slate-500 py-4">
-              No stops logged on {selectedDay}.
-              {canEdit ? ' Tap “Add Stop” to schedule an event or write a day journal.' : ''}
+          {/* Stays overlapping selected date */}
+          <div className="space-y-2.5">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Stays &amp; Bookings ({selectedDayBookings.length})
             </p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {selectedDayEvents.map((ev) => (
-                <button
-                  key={ev.clientId}
-                  type="button"
-                  onClick={() => onSelectEvent(ev)}
-                  className="w-full text-left py-3 first:pt-0 last:pb-0 hover:text-teal-800 transition-colors"
-                >
-                  <p className="text-xs text-slate-500 tabular-nums">
-                    {ev.eventTime || 'All day'}
-                  </p>
-                  <p className="text-sm font-semibold text-slate-900 mt-0.5">{ev.location}</p>
-                  {(ev.journalEntry || ev.details) && (
-                    <p className="text-xs text-slate-600 line-clamp-2 mt-1">
-                      {ev.journalEntry || ev.details}
-                    </p>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
+            {selectedDayBookings.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                No accommodations booked for {selectedDay}.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {selectedDayBookings.map((bk) => {
+                  const isConfirmed = bk.status === 'confirmed';
+                  const phaseLabel =
+                    bk.checkInDate === bk.checkOutDate
+                      ? 'Single-day stay'
+                      : selectedDay === bk.checkInDate
+                      ? 'Check-in'
+                      : selectedDay === bk.checkOutDate
+                      ? 'Check-out'
+                      : 'Overnight stay';
+                  return (
+                    <button
+                      key={bk.clientId}
+                      type="button"
+                      onClick={() => onSelectBooking?.(bk)}
+                      className={`w-full text-left rounded-xl border p-3 transition-colors ${
+                        isConfirmed
+                          ? 'border-indigo-200 bg-indigo-50/60 hover:bg-indigo-50'
+                          : 'border-amber-200 bg-amber-50/60 hover:bg-amber-50 border-dashed'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2 text-[11px] tabular-nums">
+                        <span className="font-medium text-slate-600">
+                          {phaseLabel} · {bk.checkInDate} – {bk.checkOutDate}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 font-semibold shrink-0 ${
+                            isConfirmed ? 'text-indigo-800' : 'text-amber-800'
+                          }`}
+                        >
+                          {isConfirmed ? (
+                            <CheckCircle2 className="w-3 h-3" />
+                          ) : (
+                            <Clock className="w-3 h-3" />
+                          )}
+                          {isConfirmed ? 'Confirmed' : 'Unconfirmed'}
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-slate-900 mt-1 flex items-center gap-1.5">
+                        <BedDouble className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                        <span className="truncate">{bk.name}</span>
+                      </p>
+                      {(bk.confirmationCode || bk.address) && (
+                        <p className="text-xs text-slate-600 truncate mt-0.5">
+                          {[bk.confirmationCode ? `#${bk.confirmationCode}` : '', bk.address]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Itinerary stops for selected date */}
+          <div className="space-y-2.5 border-t border-slate-100 pt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Itinerary Stops ({selectedDayEvents.length})
+            </p>
+            {selectedDayEvents.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                No stops logged on {selectedDay}.
+                {canEdit ? ' Tap “Add Stop” to schedule an event or write a day journal.' : ''}
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {selectedDayEvents.map((ev) => {
+                  const preview = ev.journalEntry || htmlToPlainText(ev.details);
+                  return (
+                    <button
+                      key={ev.clientId}
+                      type="button"
+                      onClick={() => onSelectEvent(ev)}
+                      className="w-full text-left py-3 first:pt-0 last:pb-0 hover:text-teal-800 transition-colors"
+                    >
+                      <p className="text-xs text-slate-500 tabular-nums">
+                        {ev.eventTime || 'All day'}
+                      </p>
+                      <p className="text-sm font-semibold text-slate-900 mt-0.5">{ev.location}</p>
+                      {preview && (
+                        <p className="text-xs text-slate-600 line-clamp-2 mt-1">{preview}</p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </aside>
       </div>
     </div>

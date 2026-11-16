@@ -1,4 +1,5 @@
 import type {
+  BookingRecord,
   EventRecord,
   PdfRecord,
   PhotoRecord,
@@ -7,7 +8,7 @@ import type {
 } from '../types/journal';
 
 const DB_NAME = 'fieldlog_journal_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -23,6 +24,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('events')) {
         const eventsStore = db.createObjectStore('events', { keyPath: 'clientId' });
         eventsStore.createIndex('byTrip', 'tripClientId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('bookings')) {
+        const bookingsStore = db.createObjectStore('bookings', { keyPath: 'clientId' });
+        bookingsStore.createIndex('byTrip', 'tripClientId', { unique: false });
       }
       if (!db.objectStoreNames.contains('photos')) {
         const photosStore = db.createObjectStore('photos', { keyPath: 'clientId' });
@@ -124,6 +129,39 @@ export const offlineDb = {
     const db = await openDb();
     const tx = db.transaction('events', 'readwrite');
     tx.objectStore('events').delete(clientId);
+    await txDone(tx);
+  },
+
+  async getAllBookings(): Promise<BookingRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('bookings', 'readonly');
+    const items = await reqToPromise(tx.objectStore('bookings').getAll());
+    return (items as BookingRecord[]).filter((b) => !b.deletedAt);
+  },
+
+  async getAllBookingsRaw(): Promise<BookingRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('bookings', 'readonly');
+    return reqToPromise(tx.objectStore('bookings').getAll());
+  },
+
+  async getBookingRaw(clientId: string): Promise<BookingRecord | undefined> {
+    const db = await openDb();
+    const tx = db.transaction('bookings', 'readonly');
+    return reqToPromise(tx.objectStore('bookings').get(clientId));
+  },
+
+  async putBooking(booking: BookingRecord): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('bookings', 'readwrite');
+    tx.objectStore('bookings').put(booking);
+    await txDone(tx);
+  },
+
+  async deleteBooking(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('bookings', 'readwrite');
+    tx.objectStore('bookings').delete(clientId);
     await txDone(tx);
   },
 
@@ -230,11 +268,12 @@ export const offlineDb = {
   async clearAllUserData(): Promise<void> {
     const db = await openDb();
     const tx = db.transaction(
-      ['trips', 'events', 'photos', 'pdfs', 'syncQueue', 'meta'],
+      ['trips', 'events', 'bookings', 'photos', 'pdfs', 'syncQueue', 'meta'],
       'readwrite'
     );
     tx.objectStore('trips').clear();
     tx.objectStore('events').clear();
+    tx.objectStore('bookings').clear();
     tx.objectStore('photos').clear();
     tx.objectStore('pdfs').clear();
     tx.objectStore('syncQueue').clear();

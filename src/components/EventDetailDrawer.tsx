@@ -11,6 +11,8 @@ import {
   HardDrive,
 } from 'lucide-react';
 import { extractPdfText } from '../lib/pdfExtractor';
+import { sanitizeHtml } from '../lib/htmlSanitizer';
+import { RichTextEditor } from './RichTextEditor';
 import type { EventRecord, PdfRecord, PhotoRecord } from '../types/journal';
 
 interface EventDetailDrawerProps {
@@ -185,7 +187,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
       location: location.trim(),
       latitude: lat !== null && Number.isFinite(lat) ? lat : null,
       longitude: lng !== null && Number.isFinite(lng) ? lng : null,
-      details: details.trim(),
+      details: sanitizeHtml(details),
       journalEntry,
     });
   };
@@ -415,15 +417,13 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
 
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Itinerary Details & Logistics
+                Itinerary Details &amp; Logistics
               </label>
-              <textarea
-                rows={2}
+              <RichTextEditor
                 value={details}
-                onChange={(e) => setDetails(e.target.value)}
-                placeholder="Reservation numbers, transit routes, opening hours..."
-                disabled={readOnly}
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
+                onChange={setDetails}
+                placeholder="Reservation numbers, transit routes, opening hours, formatted checklists, links..."
+                readOnly={readOnly}
               />
             </div>
           </div>

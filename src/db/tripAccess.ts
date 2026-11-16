@@ -1,6 +1,6 @@
 import { and, asc, eq, ne } from 'drizzle-orm';
 import { db } from './index.ts';
-import { events, trips, tripShares, users } from './schema.ts';
+import { bookings, events, trips, tripShares, users } from './schema.ts';
 
 export type TripAccessRole = 'owner' | 'edit' | 'view';
 
@@ -79,6 +79,33 @@ export async function getEventAccessByClientId(
   const role = await getTripAccessForTripRow(trip, userId);
   if (!role) return null;
   return { event, trip, role };
+}
+
+export async function getBookingAccessByClientId(
+  bookingClientId: string,
+  userId: number
+): Promise<{
+  booking: typeof bookings.$inferSelect;
+  trip: typeof trips.$inferSelect;
+  role: TripAccessRole;
+} | null> {
+  const [booking] = await db
+    .select()
+    .from(bookings)
+    .where(eq(bookings.clientId, bookingClientId))
+    .limit(1);
+
+  if (!booking) return null;
+  const [trip] = await db
+    .select()
+    .from(trips)
+    .where(eq(trips.id, booking.tripId))
+    .limit(1);
+
+  if (!trip) return null;
+  const role = await getTripAccessForTripRow(trip, userId);
+  if (!role) return null;
+  return { booking, trip, role };
 }
 
 export async function getAccessibleTripsForUser(userId: number): Promise<AccessibleTripRow[]> {

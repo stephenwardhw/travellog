@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  BedDouble,
   Calendar,
+  CheckCircle2,
+  Clock,
   Download,
   FileText,
   Image as ImageIcon,
@@ -8,14 +11,23 @@ import {
   Printer,
   X,
 } from 'lucide-react';
-import type { EventRecord, PdfRecord, PhotoRecord, TripRecord } from '../types/journal';
+import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import type {
+  BookingRecord,
+  EventRecord,
+  PdfRecord,
+  PhotoRecord,
+  TripRecord,
+} from '../types/journal';
 
 interface TripReportModalProps {
   open: boolean;
   trip: TripRecord | null;
   events: EventRecord[];
+  bookings?: BookingRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
+  pdfsByBooking?: Map<string, PdfRecord[]>;
   authToken: string;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   onClose: () => void;
@@ -162,12 +174,15 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   open,
   trip,
   events,
+  bookings = [],
   photosByEvent,
   pdfsByEvent,
+  pdfsByBooking = new Map<string, PdfRecord[]>(),
   authToken,
   onOpenPhoto,
   onClose,
 }) => {
+  const [includeBookings, setIncludeBookings] = useState(true);
   const [includeDetails, setIncludeDetails] = useState(true);
   const [includeJournal, setIncludeJournal] = useState(true);
   const [includeCoords, setIncludeCoords] = useState(true);
@@ -184,6 +199,11 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       return (a.eventTime || '').localeCompare(b.eventTime || '');
     });
   }, [events]);
+
+  const sortedBookings = useMemo(
+    () => [...bookings].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate)),
+    [bookings]
+  );
 
   const groupedByDate = useMemo(() => {
     const map = new Map<string, EventRecord[]>();
@@ -202,13 +222,24 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       photoCount += photosByEvent.get(ev.clientId)?.length || 0;
       pdfCount += pdfsByEvent.get(ev.clientId)?.length || 0;
     }
+    for (const bk of sortedBookings) {
+      pdfCount += pdfsByBooking.get(bk.clientId)?.length || 0;
+    }
     return {
       days: groupedByDate.length,
       stops: chronologicalEvents.length,
+      stays: sortedBookings.length,
       photos: photoCount,
       pdfs: pdfCount,
     };
-  }, [chronologicalEvents, groupedByDate.length, photosByEvent, pdfsByEvent]);
+  }, [
+    chronologicalEvents,
+    sortedBookings,
+    groupedByDate.length,
+    photosByEvent,
+    pdfsByEvent,
+    pdfsByBooking,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -269,6 +300,64 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
 
       setExportStatus('Building HTML report...');
 
+      const bookingsSectionHtml =
+        includeBookings && sortedBookings.length > 0
+          ? `<section class="bookings-section">
+              <div class="day-header">
+                <h2>Accommodations &amp; Stays</h2>
+                <span class="day-sub">${sortedBookings.length} ${
+                  sortedBookings.length === 1 ? 'stay' : 'stays'
+                }</span>
+              </div>
+              ${sortedBookings
+                .map((bk) => {
+                  const bkPdfs = includePdfs ? pdfsByBooking.get(bk.clientId) || [] : [];
+                  const isConfirmed = bk.status === 'confirmed';
+                  return `
+                    <article class="stop">
+                      <div class="stop-meta">
+                        <span class="stop-time">${escapeHtml(bk.checkInDate)} – ${escapeHtml(
+                          bk.checkOutDate
+                        )}</span>
+                        <span style="font-weight:700;color:${
+                          isConfirmed ? '#4338CA' : '#B45309'
+                        }">${isConfirmed ? 'Confirmed' : 'Unconfirmed'}</span>
+                      </div>
+                      <h3>${escapeHtml(bk.name)}</h3>
+                      ${
+                        bk.confirmationCode || bk.address
+                          ? `<p class="details">${escapeHtml(
+                              [
+                                bk.confirmationCode ? `Confirmation #${bk.confirmationCode}` : '',
+                                bk.address,
+                              ]
+                                .filter(Boolean)
+                                .join(' · ')
+                            )}</p>`
+                          : ''
+                      }
+                      ${
+                        includeCoords && bk.latitude !== null && bk.longitude !== null
+                          ? `<p class="details" style="font-family:monospace;font-size:12px;">${bk.latitude.toFixed(
+                              5
+                            )}, ${bk.longitude.toFixed(5)}</p>`
+                          : ''
+                      }
+                      ${bk.notes.trim() ? `<div class="journal">${escapeHtml(bk.notes)}</div>` : ''}
+                      ${
+                        bkPdfs.length > 0
+                          ? `<div class="pdf-list"><strong>Booking Documents:</strong> ${bkPdfs
+                              .map((p) => `${escapeHtml(p.filename)} (${formatBytes(p.sizeBytes)})`)
+                              .join(' · ')}</div>`
+                          : ''
+                      }
+                    </article>
+                  `;
+                })
+                .join('')}
+            </section>`
+          : '';
+
       const daySectionsHtml = groupedByDate
         .map(([dateIso, dayEvents]) => {
           const dayNum = computeTripDayNumber(trip.startDate, dateIso);
@@ -276,6 +365,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
             .map((ev) => {
               const evPhotos = includePhotos ? photosByEvent.get(ev.clientId) || [] : [];
               const evPdfs = includePdfs ? pdfsByEvent.get(ev.clientId) || [] : [];
+              const sanitizedDetailsHtml = sanitizeHtml(ensureDisplayHtml(ev.details));
 
               const photosHtml =
                 evPhotos.length > 0
@@ -309,8 +399,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                   </div>
                   <h3>${escapeHtml(ev.location)}</h3>
                   ${
-                    includeDetails && ev.details.trim()
-                      ? `<p class="details">${escapeHtml(ev.details)}</p>`
+                    includeDetails && sanitizedDetailsHtml
+                      ? `<div class="details-html">${sanitizedDetailsHtml}</div>`
                       : ''
                   }
                   ${
@@ -395,7 +485,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     }
     .stats {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 12px;
       padding: 16px 0;
       border-top: 1px solid #e2e8f0;
@@ -404,7 +494,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     }
     .stat-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em; }
     .stat-value { font-size: 20px; font-weight: 700; color: #0f172a; font-variant-numeric: tabular-nums; }
-    .day-section { margin-top: 32px; }
+    .bookings-section, .day-section { margin-top: 32px; }
     .day-header {
       display: flex;
       justify-content: space-between;
@@ -415,6 +505,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       padding-bottom: 6px;
       margin-bottom: 18px;
     }
+    .bookings-section .day-header { border-bottom-color: #4338ca; }
     .day-header h2 {
       font-family: Georgia, "Times New Roman", serif;
       font-size: 20px;
@@ -445,9 +536,20 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     .details {
       font-size: 13px;
       color: #475569;
-      margin: 0 0 10px;
+      margin: 0 0 8px;
       white-space: pre-wrap;
     }
+    .details-html {
+      font-size: 13px;
+      color: #475569;
+      margin: 0 0 10px;
+    }
+    .details-html p { margin: 0 0 6px; }
+    .details-html p:last-child { margin-bottom: 0; }
+    .details-html h3, .details-html h4 { font-size: 14px; font-weight: 600; color: #0f172a; margin: 8px 0 4px; }
+    .details-html ul, .details-html ol { margin: 6px 0; padding-left: 20px; }
+    .details-html blockquote { border-left: 3px solid #0f766e; margin: 6px 0; padding-left: 10px; color: #475569; font-style: italic; }
+    .details-html a { color: #0f766e; text-decoration: underline; }
     .journal {
       font-size: 14px;
       color: #1e293b;
@@ -537,9 +639,11 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     <div class="stats">
       <div><div class="stat-label">Logged Days</div><div class="stat-value">${totals.days}</div></div>
       <div><div class="stat-label">Stops</div><div class="stat-value">${totals.stops}</div></div>
+      <div><div class="stat-label">Stays</div><div class="stat-value">${totals.stays}</div></div>
       <div><div class="stat-label">Photos</div><div class="stat-value">${totals.photos}</div></div>
       <div><div class="stat-label">Documents</div><div class="stat-value">${totals.pdfs}</div></div>
     </div>
+    ${bookingsSectionHtml}
     ${
       groupedByDate.length === 0
         ? '<p style="color:#64748b;font-size:14px;">No stops logged for this trip yet.</p>'
@@ -565,7 +669,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       link.click();
       link.remove();
       URL.revokeObjectURL(url);
-      setExportStatus('HTML report downloaded with embedded trip details and photos.');
+      setExportStatus('HTML report downloaded with embedded trip details, stays, and photos.');
     } catch (err: unknown) {
       setExportStatus(
         err instanceof Error ? err.message : 'Unable to generate downloadable HTML report.'
@@ -627,6 +731,15 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600">
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeBookings}
+                onChange={(e) => setIncludeBookings(e.target.checked)}
+                className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+              />
+              Stays &amp; Bookings
+            </label>
             <label className="inline-flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -730,7 +843,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               </p>
             )}
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 py-4 border-y border-slate-200 tabular-nums">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 py-4 border-y border-slate-200 tabular-nums">
               <div>
                 <p className="text-[11px] uppercase tracking-wide text-slate-500">Logged Days</p>
                 <p className="text-xl font-bold text-slate-900">{totals.days}</p>
@@ -738,6 +851,10 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               <div>
                 <p className="text-[11px] uppercase tracking-wide text-slate-500">Stops</p>
                 <p className="text-xl font-bold text-slate-900">{totals.stops}</p>
+              </div>
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Stays</p>
+                <p className="text-xl font-bold text-slate-900">{totals.stays}</p>
               </div>
               <div>
                 <p className="text-[11px] uppercase tracking-wide text-slate-500">Photos</p>
@@ -749,6 +866,93 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               </div>
             </div>
           </header>
+
+          {/* Accommodations & Multiday Bookings */}
+          {includeBookings && sortedBookings.length > 0 && (
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b-2 border-indigo-700 pb-2">
+                <h2 className="font-display text-xl font-semibold text-slate-900 flex items-center gap-2">
+                  <BedDouble className="w-5 h-5 text-indigo-700" />
+                  Accommodations &amp; Stays
+                </h2>
+                <span className="text-xs font-medium text-slate-500 tabular-nums">
+                  {sortedBookings.length} {sortedBookings.length === 1 ? 'stay' : 'stays'}
+                </span>
+              </div>
+
+              <div className="space-y-3">
+                {sortedBookings.map((bk) => {
+                  const bkPdfs = includePdfs ? pdfsByBooking.get(bk.clientId) || [] : [];
+                  const isConfirmed = bk.status === 'confirmed';
+                  return (
+                    <article
+                      key={bk.clientId}
+                      className="break-inside-avoid rounded-xl border border-slate-200 bg-white p-5 space-y-2.5"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-xs tabular-nums">
+                        <span className="font-semibold text-slate-600">
+                          {bk.checkInDate} – {bk.checkOutDate}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 font-semibold ${
+                            isConfirmed ? 'text-indigo-700' : 'text-amber-700'
+                          }`}
+                        >
+                          {isConfirmed ? (
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                          ) : (
+                            <Clock className="w-3.5 h-3.5" />
+                          )}
+                          {isConfirmed ? 'Confirmed' : 'Unconfirmed'}
+                        </span>
+                      </div>
+
+                      <h3 className="text-base sm:text-lg font-semibold text-slate-900">
+                        {bk.name}
+                      </h3>
+
+                      {(bk.confirmationCode || bk.address) && (
+                        <p className="text-xs text-slate-600">
+                          {[
+                            bk.confirmationCode ? `Confirmation #${bk.confirmationCode}` : '',
+                            bk.address,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </p>
+                      )}
+
+                      {includeCoords && bk.latitude !== null && bk.longitude !== null && (
+                        <p className="text-xs font-mono text-slate-500 tabular-nums">
+                          {bk.latitude.toFixed(5)}, {bk.longitude.toFixed(5)}
+                        </p>
+                      )}
+
+                      {bk.notes.trim() && (
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
+                          {bk.notes}
+                        </div>
+                      )}
+
+                      {bkPdfs.length > 0 && (
+                        <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                          <span className="inline-flex items-center gap-1 font-medium text-slate-700">
+                            <FileText className="w-3.5 h-3.5 text-indigo-700" />
+                            Booking PDFs:
+                          </span>
+                          {bkPdfs.map((pdf) => (
+                            <span key={pdf.clientId} className="tabular-nums">
+                              {pdf.filename} ({formatBytes(pdf.sizeBytes)})
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Day-by-Day Chronological Itinerary & Journal */}
           {groupedByDate.length === 0 ? (
@@ -775,6 +979,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                       {dayEvents.map((ev) => {
                         const evPhotos = includePhotos ? photosByEvent.get(ev.clientId) || [] : [];
                         const evPdfs = includePdfs ? pdfsByEvent.get(ev.clientId) || [] : [];
+                        const sanitizedDetailsHtml = sanitizeHtml(ensureDisplayHtml(ev.details));
 
                         return (
                           <article
@@ -796,10 +1001,11 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                               {ev.location}
                             </h3>
 
-                            {includeDetails && ev.details.trim() && (
-                              <p className="text-sm text-slate-600 whitespace-pre-wrap leading-relaxed">
-                                {ev.details}
-                              </p>
+                            {includeDetails && sanitizedDetailsHtml && (
+                              <div
+                                className="text-sm text-slate-600 leading-relaxed [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-1.5 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-teal-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-teal-700 [&_a]:underline"
+                                dangerouslySetInnerHTML={{ __html: sanitizedDetailsHtml }}
+                              />
                             )}
 
                             {includeJournal && ev.journalEntry.trim() && (
