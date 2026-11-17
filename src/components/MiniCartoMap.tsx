@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import L from 'leaflet';
-import { MapPin, WifiOff } from 'lucide-react';
+import { MapPin, Navigation, WifiOff } from 'lucide-react';
 import { useNetworkStatus } from '../lib/network';
 import type { BookingStatus } from '../types/journal';
 
@@ -8,6 +8,7 @@ interface MiniCartoMapProps {
   latitude: number | null;
   longitude: number | null;
   title?: string;
+  pinVariant?: 'stay' | 'event';
   status?: BookingStatus;
   interactive?: boolean;
   allowEmptyMap?: boolean;
@@ -17,10 +18,38 @@ interface MiniCartoMapProps {
 
 const CARTO_VOYAGER_URL = '/api/tiles/{s}/{z}/{x}/{y}{r}.png';
 
+function buildNavigationHref(lat: number, lng: number, label?: string): {
+  href: string;
+  isNativeScheme: boolean;
+} {
+  const cleanLabel = (label || 'Destination').trim();
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent || '' : '';
+
+  if (/android/i.test(ua)) {
+    return {
+      href: `geo:${lat},${lng}?q=${lat},${lng}(${encodeURIComponent(cleanLabel)})`,
+      isNativeScheme: true,
+    };
+  }
+
+  if (/iphone|ipad|ipod|macintosh/i.test(ua)) {
+    return {
+      href: `maps://?daddr=${lat},${lng}&q=${encodeURIComponent(cleanLabel)}`,
+      isNativeScheme: true,
+    };
+  }
+
+  return {
+    href: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`,
+    isNativeScheme: false,
+  };
+}
+
 export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
   latitude,
   longitude,
-  title = 'Stay location',
+  title = 'Location',
+  pinVariant = 'stay',
   status = 'unconfirmed',
   interactive = false,
   allowEmptyMap = false,
@@ -41,6 +70,11 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     Number.isFinite(longitude);
 
   const shouldRenderMap = hasValidCoords || allowEmptyMap;
+
+  const navLink = useMemo(() => {
+    if (!hasValidCoords) return null;
+    return buildNavigationHref(latitude!, longitude!, title);
+  }, [hasValidCoords, latitude, longitude, title]);
 
   useEffect(() => {
     if (!shouldRenderMap || !containerRef.current) return;
@@ -99,7 +133,7 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     };
   }, [interactive, shouldRenderMap]);
 
-  // Update marker position and zoom when coordinates or status change
+  // Update marker position and zoom when coordinates, variant, or status change
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -113,13 +147,18 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     }
 
     const pos: L.LatLngExpression = [latitude!, longitude!];
-    const isConfirmed = status === 'confirmed';
-    const pinBg = isConfirmed ? '#4338CA' : '#D97706';
-    const safeTitle = (title || 'Stay location').replace(/"/g, '&quot;');
+    const safeTitle = (title || 'Location').replace(/"/g, '&quot;');
+
+    const iconHtml =
+      pinVariant === 'event'
+        ? `<div style="width:30px;height:30px;border-radius:9999px;background:#0F766E;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;" title="${safeTitle}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>`
+        : `<div style="width:30px;height:30px;border-radius:8px;background:${
+            status === 'confirmed' ? '#4338CA' : '#D97706'
+          };color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;" title="${safeTitle}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/></svg></div>`;
 
     const icon = L.divIcon({
       className: '',
-      html: `<div style="width:30px;height:30px;border-radius:8px;background:${pinBg};color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;" title="${safeTitle}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/></svg></div>`,
+      html: iconHtml,
       iconSize: [30, 30],
       iconAnchor: [15, 15],
     });
@@ -151,7 +190,7 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     const currentZoom = map.getZoom();
     map.setView(pos, currentZoom < 13 ? 15 : currentZoom, { animate: true });
     map.invalidateSize();
-  }, [hasValidCoords, latitude, longitude, status, title, interactive]);
+  }, [hasValidCoords, latitude, longitude, pinVariant, status, title, interactive]);
 
   if (!shouldRenderMap) {
     return null;
@@ -168,19 +207,38 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
           </div>
         )}
       </div>
-      <div className="px-3 py-1.5 border-t border-slate-200 bg-white flex items-center justify-between gap-2 text-[11px] text-slate-500">
-        <span className="inline-flex items-center gap-1 truncate">
-          <MapPin className="w-3 h-3 text-indigo-700 shrink-0" />
-          {hasValidCoords
-            ? interactive
-              ? 'Drag pin or click map to adjust exact location'
-              : 'CARTO map preview'
-            : 'Click anywhere on the map to drop pin'}
-        </span>
-        {hasValidCoords && (
-          <span className="font-mono text-[10px] text-slate-400 tabular-nums shrink-0">
-            {latitude!.toFixed(5)}, {longitude!.toFixed(5)}
+      <div className="px-3 py-2 border-t border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+        <div className="min-w-0 flex-1 flex items-center gap-1.5">
+          <MapPin
+            className={`w-3.5 h-3.5 shrink-0 ${
+              pinVariant === 'event' ? 'text-teal-700' : 'text-indigo-700'
+            }`}
+          />
+          <span className="truncate">
+            {hasValidCoords
+              ? interactive
+                ? 'Drag pin or click map to adjust coordinates'
+                : 'CARTO map preview'
+              : 'Click anywhere on the map to drop pin'}
           </span>
+          {hasValidCoords && (
+            <span className="hidden sm:inline font-mono text-[10px] text-slate-400 tabular-nums shrink-0">
+              ({latitude!.toFixed(5)}, {longitude!.toFixed(5)})
+            </span>
+          )}
+        </div>
+
+        {navLink && (
+          <a
+            href={navLink.href}
+            target={navLink.isNativeScheme ? undefined : '_blank'}
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-teal-800 transition-colors whitespace-nowrap shrink-0"
+            title={`Open navigation to ${latitude!.toFixed(5)}, ${longitude!.toFixed(5)}`}
+          >
+            <Navigation className="w-3.5 h-3.5" />
+            Navigate To
+          </a>
         )}
       </div>
     </div>

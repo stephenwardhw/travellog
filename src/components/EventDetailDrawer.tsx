@@ -3,7 +3,9 @@ import {
   Camera,
   FileText,
   LocateFixed,
+  MapPin,
   Maximize2,
+  Search,
   Trash2,
   Upload,
   X,
@@ -13,7 +15,15 @@ import {
 import { extractPdfText } from '../lib/pdfExtractor';
 import { sanitizeHtml } from '../lib/htmlSanitizer';
 import { RichTextEditor } from './RichTextEditor';
+import { MiniCartoMap } from './MiniCartoMap';
 import type { EventRecord, PdfRecord, PhotoRecord } from '../types/journal';
+
+interface GeocodeCandidate {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+  category?: string;
+}
 
 interface EventDetailDrawerProps {
   open: boolean;
@@ -46,6 +56,7 @@ interface EventDetailDrawerProps {
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   readOnly?: boolean;
   ownerLabel?: string;
+  authToken?: string;
 }
 
 const PhotoCard: React.FC<{
@@ -133,6 +144,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   onOpenPhoto,
   readOnly = false,
   ownerLabel,
+  authToken,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [location, setLocation] = useState('');
@@ -147,6 +159,11 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   const [extractingPdf, setExtractingPdf] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [locatingGps, setLocatingGps] = useState(false);
+  const [geoSearchQuery, setGeoSearchQuery] = useState('');
+  const [geoResults, setGeoResults] = useState<GeocodeCandidate[]>([]);
+  const [searchingGeo, setSearchingGeo] = useState(false);
+  const [geoNotice, setGeoNotice] = useState<string | null>(null);
+  const [showMapPicker, setShowMapPicker] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -169,6 +186,10 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
     );
     setDetails(event?.details || '');
     setJournalEntry(event?.journalEntry || '');
+    setGeoSearchQuery('');
+    setGeoResults([]);
+    setGeoNotice(null);
+    setShowMapPicker(false);
     setError(null);
   }, [open, event, defaultDate, defaultCoords, today]);
 
@@ -253,6 +274,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
       (pos) => {
         setLatitude(pos.coords.latitude.toFixed(5));
         setLongitude(pos.coords.longitude.toFixed(5));
+        setGeoNotice('Coordinates updated from current GPS position.');
         setLocatingGps(false);
       },
       () => {
@@ -261,6 +283,61 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
       }
     );
   };
+
+  const handleGeocodeLookup = async (overrideQuery?: string) => {
+    const query = (overrideQuery !== undefined ? overrideQuery : geoSearchQuery).trim();
+    if (!query) {
+      setGeoNotice('Enter a place name, address, or landmark to look up coordinates.');
+      return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setGeoNotice('Offline — place lookup requires an internet connection, or click "Pick on Map".');
+      return;
+    }
+
+    if (overrideQuery !== undefined) {
+      setGeoSearchQuery(query);
+    }
+
+    setSearchingGeo(true);
+    setGeoNotice(null);
+    setError(null);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, { headers });
+      const data = (await res.json()) as {
+        results?: GeocodeCandidate[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setGeoNotice(data?.error || 'Unable to look up that location.');
+        setGeoResults([]);
+        return;
+      }
+      const found = Array.isArray(data.results) ? data.results : [];
+      setGeoResults(found);
+      if (found.length > 0) {
+        setLatitude(found[0].latitude.toFixed(5));
+        setLongitude(found[0].longitude.toFixed(5));
+        setGeoNotice(null);
+      } else {
+        setGeoNotice('No matching coordinates found. Try adding the city or country name.');
+      }
+    } catch {
+      setGeoNotice('Could not reach location lookup service.');
+    } finally {
+      setSearchingGeo(false);
+    }
+  };
+
+  const parsedLat =
+    latitude.trim() !== '' && Number.isFinite(Number(latitude)) ? Number(latitude) : null;
+  const parsedLng =
+    longitude.trim() !== '' && Number.isFinite(Number(longitude)) ? Number(longitude) : null;
+  const hasCoordinates = parsedLat !== null && parsedLng !== null;
 
   const handleOpenPdf = (pdf: PdfRecord) => {
     if (!pdf.blob) {
@@ -334,9 +411,22 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
 
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Location / Stop Name
-              </label>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-medium text-slate-700">
+                  Location / Stop Name
+                </label>
+                {!readOnly && location.trim() && (
+                  <button
+                    type="button"
+                    disabled={searchingGeo}
+                    onClick={() => handleGeocodeLookup(location.trim())}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800 disabled:opacity-50"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    {searchingGeo ? 'Looking up...' : 'Look up Lat/Lng'}
+                  </button>
+                )}
+              </div>
               <input
                 type="text"
                 value={location}
@@ -376,23 +466,104 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
               </div>
             </div>
 
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-medium text-slate-700">
-                  Coordinates (optional)
+                  Coordinates &amp; Map Location (optional)
                 </label>
                 {!readOnly && (
-                  <button
-                    type="button"
-                    onClick={handleUseGps}
-                    disabled={locatingGps}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
-                  >
-                    <LocateFixed className="w-3.5 h-3.5" />
-                    {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {!hasCoordinates && (
+                      <button
+                        type="button"
+                        onClick={() => setShowMapPicker((v) => !v)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
+                      >
+                        <MapPin className="w-3.5 h-3.5" />
+                        {showMapPicker ? 'Hide Map Picker' : 'Pick on Map'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleUseGps}
+                      disabled={locatingGps}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
+                    >
+                      <LocateFixed className="w-3.5 h-3.5" />
+                      {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
+                    </button>
+                  </div>
                 )}
               </div>
+
+              {!readOnly && (
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={geoSearchQuery}
+                      onChange={(e) => setGeoSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleGeocodeLookup();
+                        }
+                      }}
+                      placeholder="Search landmark, address, or place to find coordinates..."
+                      aria-label="Search stop location for coordinates"
+                      className="w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={searchingGeo}
+                    onClick={() => handleGeocodeLookup()}
+                    className="rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {searchingGeo ? 'Searching...' : 'Find'}
+                  </button>
+                </div>
+              )}
+
+              {geoNotice && (
+                <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  {geoNotice}
+                </p>
+              )}
+
+              {!readOnly && geoResults.length > 0 && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200 overflow-hidden">
+                  {geoResults.map((item, idx) => {
+                    const isActiveMatch =
+                      parsedLat !== null &&
+                      parsedLng !== null &&
+                      Math.abs(parsedLat - item.latitude) < 0.0002 &&
+                      Math.abs(parsedLng - item.longitude) < 0.0002;
+                    return (
+                      <button
+                        key={`${item.latitude}-${item.longitude}-${idx}`}
+                        type="button"
+                        onClick={() => {
+                          setLatitude(item.latitude.toFixed(5));
+                          setLongitude(item.longitude.toFixed(5));
+                        }}
+                        className={`w-full text-left px-3 py-2 text-xs flex items-start justify-between gap-2 transition-colors ${
+                          isActiveMatch
+                            ? 'bg-teal-50 text-teal-950 font-medium'
+                            : 'hover:bg-white text-slate-700'
+                        }`}
+                      >
+                        <span className="line-clamp-2 flex-1">{item.displayName}</span>
+                        <span className="font-mono text-[10px] text-slate-500 tabular-nums shrink-0 mt-0.5">
+                          {item.latitude.toFixed(4)}, {item.longitude.toFixed(4)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <input
                   type="number"
@@ -413,6 +584,22 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
+
+              {(hasCoordinates || (!readOnly && showMapPicker)) && (
+                <MiniCartoMap
+                  latitude={parsedLat}
+                  longitude={parsedLng}
+                  title={location || 'Stop Location'}
+                  pinVariant="event"
+                  interactive={!readOnly}
+                  allowEmptyMap={!readOnly && showMapPicker}
+                  defaultCenter={defaultCoords}
+                  onChangeCoordinates={(lat, lng) => {
+                    setLatitude(lat.toFixed(5));
+                    setLongitude(lng.toFixed(5));
+                  }}
+                />
+              )}
             </div>
 
             <div>

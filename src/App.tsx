@@ -1932,6 +1932,7 @@ export default function App() {
         pdfs={activeDrawerPdfs}
         readOnly={drawerReadOnly}
         ownerLabel={drawerOwnerLabel}
+        authToken={session.token}
         onClose={() => setDrawerOpen(false)}
         onSaveEvent={handleSaveEvent}
         onDeleteEvent={handleDeleteEvent}
