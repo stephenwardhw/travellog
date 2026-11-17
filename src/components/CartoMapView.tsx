@@ -251,7 +251,7 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
         [
           bk.confirmationCode ? `Ref #${bk.confirmationCode}` : '',
           bk.address,
-          bk.notes,
+          htmlToPlainText(bk.notes),
         ]
           .filter(Boolean)
           .join(' · ') || 'No booking notes yet.';

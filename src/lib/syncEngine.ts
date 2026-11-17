@@ -166,7 +166,12 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           }
           const form = new FormData();
           form.append('clientId', photo.clientId);
-          form.append('eventClientId', photo.eventClientId);
+          if (photo.eventClientId) {
+            form.append('eventClientId', photo.eventClientId);
+          }
+          if (photo.bookingClientId) {
+            form.append('bookingClientId', photo.bookingClientId);
+          }
           form.append('caption', photo.caption || '');
           form.append('file', photo.blob, photo.filename);
           if (photo.thumbBlob) {
@@ -397,7 +402,8 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
 
         await offlineDb.putPhoto({
           clientId: remotePhoto.clientId,
-          eventClientId: remotePhoto.eventClientId,
+          eventClientId: remotePhoto.eventClientId || '',
+          bookingClientId: remotePhoto.bookingClientId || '',
           filename: remotePhoto.filename,
           mimeType: remotePhoto.mimeType,
           sizeBytes: remotePhoto.sizeBytes,

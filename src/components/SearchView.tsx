@@ -116,7 +116,13 @@ export const SearchView: React.FC<SearchViewProps> = ({
     if (scope === 'all' || scope === 'bookings') {
       for (const bk of bookings) {
         const trip = tripMap.get(bk.tripClientId);
-        const combined = [bk.name, bk.confirmationCode, bk.address, bk.notes, bk.status]
+        const combined = [
+          bk.name,
+          bk.confirmationCode,
+          bk.address,
+          htmlToPlainText(bk.notes),
+          bk.status,
+        ]
           .filter(Boolean)
           .join(' · ');
         if (combined.toLowerCase().includes(q)) {

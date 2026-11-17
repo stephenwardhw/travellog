@@ -1,23 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import {
   BedDouble,
+  Camera,
   CheckCircle2,
   Clock,
   ExternalLink,
   FileText,
+  HardDrive,
   LocateFixed,
+  Maximize2,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import { extractPdfText } from '../lib/pdfExtractor';
-import type { BookingRecord, BookingStatus, PdfRecord } from '../types/journal';
+import { sanitizeHtml } from '../lib/htmlSanitizer';
+import { RichTextEditor } from './RichTextEditor';
+import type { BookingRecord, BookingStatus, PdfRecord, PhotoRecord } from '../types/journal';
 
 interface BookingDetailDrawerProps {
   open: boolean;
   booking: BookingRecord | null;
   defaultDate?: string;
   defaultCoords?: { lat: number; lng: number } | null;
+  photos: PhotoRecord[];
   pdfs: PdfRecord[];
   onClose: () => void;
   onSaveBooking: (data: {
@@ -33,26 +39,101 @@ interface BookingDetailDrawerProps {
     notes: string;
   }) => Promise<BookingRecord>;
   onDeleteBooking: (clientId: string) => Promise<void>;
+  onAddBookingPhotos: (bookingClientId: string, files: FileList) => Promise<void>;
+  onDeletePhoto: (clientId: string) => Promise<void>;
   onAddBookingPdfs: (
     bookingClientId: string,
     items: Array<{ file: File; extractedText: string }>
   ) => Promise<void>;
   onDeletePdf: (clientId: string) => Promise<void>;
+  onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   readOnly?: boolean;
   ownerLabel?: string;
 }
+
+const StayPhotoCard: React.FC<{
+  photo: PhotoRecord;
+  readOnly?: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}> = ({ photo, readOnly, onOpen, onDelete }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const displayBlob = photo.thumbBlob || photo.blob;
+
+  useEffect(() => {
+    if (!displayBlob) {
+      setUrl(null);
+      return;
+    }
+    const objUrl = URL.createObjectURL(displayBlob);
+    setUrl(objUrl);
+    return () => URL.revokeObjectURL(objUrl);
+  }, [displayBlob]);
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex flex-col">
+      <div className="aspect-4/3 bg-slate-100 relative overflow-hidden">
+        {url ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="w-full h-full block group relative cursor-zoom-in focus:outline-none"
+            aria-label={`View high-resolution ${photo.filename}`}
+          >
+            <img
+              src={url}
+              alt={photo.caption || photo.filename}
+              className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+            />
+            <span className="absolute bottom-2 left-2 w-7 h-7 rounded-lg bg-slate-900/65 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <Maximize2 className="w-3.5 h-3.5" />
+            </span>
+          </button>
+        ) : (
+          <div className="w-full h-full flex flex-col items-center justify-center p-3 text-center text-xs text-slate-500">
+            <HardDrive className="w-5 h-5 mb-1 text-slate-400" />
+            <span>Waiting for Wi-Fi download</span>
+          </div>
+        )}
+        {!readOnly && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="absolute top-2 right-2 w-8 h-8 rounded-lg bg-slate-900/70 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
+            aria-label={`Delete ${photo.filename}`}
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="px-2.5 py-2 flex items-center justify-between gap-2 text-[11px] text-slate-600">
+        <span className="truncate">{photo.filename}</span>
+        <span className="shrink-0 tabular-nums text-slate-400">
+          {photo.syncStatus === 'pending' ? 'Queued' : 'Synced'}
+        </span>
+      </div>
+    </div>
+  );
+};
 
 export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   open,
   booking,
   defaultDate,
   defaultCoords,
+  photos,
   pdfs,
   onClose,
   onSaveBooking,
   onDeleteBooking,
+  onAddBookingPhotos,
+  onDeletePhoto,
   onAddBookingPdfs,
   onDeletePdf,
+  onOpenPhoto,
   readOnly = false,
   ownerLabel,
 }) => {
@@ -67,6 +148,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   const [longitude, setLongitude] = useState('');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [attachingPhotos, setAttachingPhotos] = useState(false);
   const [extractingPdf, setExtractingPdf] = useState(false);
   const [locatingGps, setLocatingGps] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,7 +205,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
       address: address.trim(),
       latitude: lat !== null && Number.isFinite(lat) ? lat : null,
       longitude: lng !== null && Number.isFinite(lng) ? lng : null,
-      notes: notes.trim(),
+      notes: sanitizeHtml(notes),
     });
   };
 
@@ -138,6 +220,22 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
       setError(err instanceof Error ? err.message : 'Unable to save booking.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setError(null);
+    setAttachingPhotos(true);
+    try {
+      const saved = booking || (await persistCurrentBooking());
+      await onAddBookingPhotos(saved.clientId, files);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to attach stay photo.');
+    } finally {
+      setAttachingPhotos(false);
+      e.target.value = '';
     }
   };
 
@@ -245,7 +343,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
           {readOnly && (
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-700">
               View-only access{ownerLabel ? ` · Shared by ${ownerLabel}` : ''}. You can inspect stay
-              dates, confirmation status, coordinates, and open booking PDFs.
+              dates, confirmation status, formatted notes, photos, coordinates, and booking PDFs.
             </div>
           )}
 
@@ -411,18 +509,67 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Stay Notes &amp; Check-in Details
-              </label>
-              <textarea
-                rows={4}
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-medium text-slate-700">
+                  Stay Notes &amp; Check-in Details
+                </label>
+                {!readOnly && (
+                  <span className="text-[11px] text-slate-400">
+                    Supports HTML formatting &amp; web/app links
+                  </span>
+                )}
+              </div>
+              <RichTextEditor
                 value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Check-in window 15:00, luggage storage policy, breakfast included, cancellation deadline..."
-                disabled={readOnly}
-                className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 disabled:bg-slate-50 disabled:text-slate-700"
+                onChange={setNotes}
+                placeholder="Check-in window 15:00, door codes, breakfast hours, cancellation policy, or links to Maps, Obsidian, Notion..."
+                emptyReadOnlyText="No stay notes logged."
+                readOnly={readOnly}
+                minHeightClass="min-h-[150px]"
               />
             </div>
+          </div>
+
+          {/* Stay Photos section */}
+          <div className="border-t border-slate-200 pt-5 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">
+                  Stay Photos ({photos.length})
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Room photos, entrance views, or check-in keycard instructions synced over Wi-Fi.
+                </p>
+              </div>
+              {!readOnly && (
+                <label className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer min-h-[40px] whitespace-nowrap">
+                  <Camera className="w-3.5 h-3.5 text-indigo-700" />
+                  {attachingPhotos ? 'Processing...' : 'Attach Photos'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handlePhotoUpload}
+                    className="hidden"
+                    disabled={attachingPhotos}
+                  />
+                </label>
+              )}
+            </div>
+
+            {photos.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {photos.map((photo, idx) => (
+                  <StayPhotoCard
+                    key={photo.clientId}
+                    photo={photo}
+                    readOnly={readOnly}
+                    onOpen={() => onOpenPhoto(photos, idx, name || booking?.name)}
+                    onDelete={() => onDeletePhoto(photo.clientId)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Booking PDFs section */}

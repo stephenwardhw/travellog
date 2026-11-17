@@ -60,10 +60,10 @@ export const events = pgTable('events', {
 export const photos = pgTable('photos', {
   id: serial('id').primaryKey(),
   clientId: text('client_id').notNull().unique(),
-  eventClientId: text('event_client_id').notNull(),
-  eventId: integer('event_id')
-    .references(() => events.id, { onDelete: 'cascade' })
-    .notNull(),
+  eventClientId: text('event_client_id').notNull().default(''),
+  eventId: integer('event_id').references(() => events.id, { onDelete: 'cascade' }),
+  bookingClientId: text('booking_client_id').notNull().default(''),
+  bookingId: integer('booking_id').references(() => bookings.id, { onDelete: 'cascade' }),
   userId: integer('user_id')
     .references(() => users.id, { onDelete: 'cascade' })
     .notNull(),
@@ -224,6 +224,7 @@ export const bookingsRelations = relations(bookings, ({ one, many }) => ({
     fields: [bookings.userId],
     references: [users.id],
   }),
+  photos: many(photos),
   pdfs: many(pdfs),
 }));
 
@@ -231,6 +232,10 @@ export const photosRelations = relations(photos, ({ one }) => ({
   event: one(events, {
     fields: [photos.eventId],
     references: [events.id],
+  }),
+  booking: one(bookings, {
+    fields: [photos.bookingId],
+    references: [bookings.id],
   }),
   user: one(users, {
     fields: [photos.userId],

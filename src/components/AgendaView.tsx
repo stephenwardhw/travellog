@@ -26,6 +26,7 @@ interface AgendaViewProps {
   events: EventRecord[];
   bookings?: BookingRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
+  photosByBooking?: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
   pdfsByBooking?: Map<string, PdfRecord[]>;
   weather?: WeatherForecastResponse | null;
@@ -101,6 +102,7 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
   events,
   bookings = [],
   photosByEvent,
+  photosByBooking = new Map<string, PhotoRecord[]>(),
   pdfsByEvent,
   pdfsByBooking = new Map<string, PdfRecord[]>(),
   weather = null,
@@ -297,13 +299,22 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {sortedBookings.map((bk) => {
               const isConfirmed = bk.status === 'confirmed';
+              const bkPhotos = photosByBooking.get(bk.clientId) || [];
               const bkPdfs = pdfsByBooking.get(bk.clientId) || [];
+              const sanitizedNotesHtml = sanitizeHtml(ensureDisplayHtml(bk.notes));
               return (
-                <button
+                <div
                   key={bk.clientId}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onSelectBooking?.(bk)}
-                  className={`text-left rounded-xl border p-4 transition-colors space-y-1.5 ${
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectBooking?.(bk);
+                    }
+                  }}
+                  className={`text-left rounded-xl border p-4 transition-colors space-y-1.5 cursor-pointer ${
                     isConfirmed
                       ? 'border-indigo-200 bg-white hover:bg-indigo-50/40'
                       : 'border-amber-200 border-dashed bg-amber-50/30 hover:bg-amber-50/60'
@@ -327,11 +338,14 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                     </span>
                   </div>
                   <h4 className="text-sm font-semibold text-slate-900 truncate">{bk.name}</h4>
-                  {(bk.confirmationCode || bk.address || bkPdfs.length > 0) && (
+                  {(bk.confirmationCode || bk.address || bkPhotos.length > 0 || bkPdfs.length > 0) && (
                     <p className="text-xs text-slate-500 truncate tabular-nums">
                       {[
                         bk.confirmationCode ? `#${bk.confirmationCode}` : '',
                         bk.address,
+                        bkPhotos.length > 0
+                          ? `${bkPhotos.length} ${bkPhotos.length === 1 ? 'photo' : 'photos'}`
+                          : '',
                         bkPdfs.length > 0
                           ? `${bkPdfs.length} ${bkPdfs.length === 1 ? 'PDF' : 'PDFs'}`
                           : '',
@@ -340,7 +354,32 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                         .join(' · ')}
                     </p>
                   )}
-                </button>
+                  {sanitizedNotesHtml && (
+                    <div
+                      className="text-xs text-slate-600 line-clamp-2 leading-relaxed [&_p]:inline [&_p+p]:ml-1.5 [&_ul]:inline [&_ol]:inline [&_li]:inline [&_a]:text-teal-700 [&_a]:underline"
+                      dangerouslySetInnerHTML={{ __html: sanitizedNotesHtml }}
+                    />
+                  )}
+                  {bkPhotos.length > 0 && (
+                    <div className="flex items-center gap-2 pt-1">
+                      {bkPhotos.slice(0, 3).map((photo, idx) => (
+                        <LocalThumb
+                          key={photo.clientId}
+                          photo={photo}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenPhoto(bkPhotos, idx, bk.name);
+                          }}
+                        />
+                      ))}
+                      {bkPhotos.length > 3 && (
+                        <span className="text-[11px] font-medium text-slate-500 tabular-nums">
+                          +{bkPhotos.length - 3}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>

@@ -160,7 +160,7 @@ export function generateSmartPackingSuggestions(opts: {
     trip.title,
     trip.description,
     ...events.map((e) => `${e.location} ${htmlToPlainText(e.details)} ${htmlToPlainText(e.journalEntry)}`),
-    ...bookings.map((b) => `${b.name} ${b.address} ${b.notes}`),
+    ...bookings.map((b) => `${b.name} ${b.address} ${htmlToPlainText(b.notes)}`),
   ]
     .join(' ')
     .toLowerCase();

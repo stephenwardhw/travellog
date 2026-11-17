@@ -429,13 +429,21 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
           </div>
 
           <div className="border-t border-slate-200 pt-5">
-            <label className="block text-sm font-semibold text-slate-900 mb-1.5">
-              Journal of the Day
-            </label>
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <label className="block text-sm font-semibold text-slate-900">
+                Journal of the Day
+              </label>
+              {!readOnly && (
+                <span className="text-[11px] text-slate-400">
+                  Use Link / App for web or program links
+                </span>
+              )}
+            </div>
             <RichTextEditor
               value={journalEntry}
               onChange={setJournalEntry}
-              placeholder="Write your reflections, highlights, meals, people you met, and impressions of the day..."
+              placeholder="Write your reflections, highlights, meals, or link out to Maps, Obsidian, Notion, phone numbers..."
+              emptyReadOnlyText="No journal entry logged."
               readOnly={readOnly}
               minHeightClass="min-h-[190px]"
             />

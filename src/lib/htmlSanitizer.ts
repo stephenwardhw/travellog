@@ -31,15 +31,41 @@ function escapeHtmlText(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function isSafeHref(href: string): boolean {
-  const trimmed = href.trim().toLowerCase();
+const BLOCKED_URI_SCHEMES = new Set([
+  'javascript',
+  'vbscript',
+  'data',
+  'blob',
+  'filesystem',
+]);
+
+function stripControlChars(value: string): string {
+  return value.replace(/[\u0000-\u001F\u007F\s]+/g, '');
+}
+
+export function getUriScheme(href: string): string {
+  const cleaned = stripControlChars(href || '').toLowerCase();
+  const match = cleaned.match(/^([a-z][a-z0-9+.-]*):/);
+  return match ? match[1] : '';
+}
+
+export function isSafeHref(href: string): boolean {
+  const trimmed = (href || '').trim();
   if (!trimmed) return false;
-  return (
-    trimmed.startsWith('http://') ||
-    trimmed.startsWith('https://') ||
-    trimmed.startsWith('mailto:') ||
-    trimmed.startsWith('tel:')
-  );
+  const normalized = stripControlChars(trimmed).toLowerCase();
+  const schemeMatch = normalized.match(/^([a-z][a-z0-9+.-]*):/);
+  if (!schemeMatch) return false;
+
+  const scheme = schemeMatch[1];
+  if (BLOCKED_URI_SCHEMES.has(scheme)) {
+    return false;
+  }
+  return true;
+}
+
+function isWebHref(href: string): boolean {
+  const scheme = getUriScheme(href);
+  return scheme === 'http' || scheme === 'https';
 }
 
 function sanitizeNode(node: Node, doc: Document): Node | null {
@@ -82,9 +108,14 @@ function sanitizeNode(node: Node, doc: Document): Node | null {
   if (tag === 'a') {
     const rawHref = el.getAttribute('href') || '';
     if (isSafeHref(rawHref)) {
-      cleanEl.setAttribute('href', rawHref.trim());
-      cleanEl.setAttribute('target', '_blank');
-      cleanEl.setAttribute('rel', 'noopener noreferrer');
+      const trimmedHref = rawHref.trim();
+      cleanEl.setAttribute('href', trimmedHref);
+      if (isWebHref(trimmedHref)) {
+        cleanEl.setAttribute('target', '_blank');
+        cleanEl.setAttribute('rel', 'noopener noreferrer');
+      } else {
+        cleanEl.setAttribute('rel', 'noopener noreferrer');
+      }
     }
   }
 
@@ -161,4 +192,40 @@ export function htmlToPlainText(raw: string): string {
   }
 
   return withSpacing.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+export interface ExtractedLink {
+  href: string;
+  label: string;
+  scheme: string;
+  isExternalApp: boolean;
+}
+
+export function extractLinksFromHtml(raw: string): ExtractedLink[] {
+  const cleaned = sanitizeHtml(ensureDisplayHtml(raw));
+  if (!cleaned || typeof DOMParser === 'undefined') return [];
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${cleaned}</div>`, 'text/html');
+  const anchors = Array.from(doc.querySelectorAll('a[href]'));
+  const seen = new Set<string>();
+  const links: ExtractedLink[] = [];
+
+  for (const anchor of anchors) {
+    const href = (anchor.getAttribute('href') || '').trim();
+    if (!href || !isSafeHref(href)) continue;
+    const label = (anchor.textContent || '').trim() || href;
+    const key = `${href}::${label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const scheme = getUriScheme(href);
+    links.push({
+      href,
+      label,
+      scheme,
+      isExternalApp: scheme !== 'http' && scheme !== 'https',
+    });
+  }
+
+  return links;
 }

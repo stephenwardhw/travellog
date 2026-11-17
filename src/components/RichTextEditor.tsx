@@ -1,7 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bold,
   Code2,
+  ExternalLink,
   Heading3,
   Italic,
   Link as LinkIcon,
@@ -12,20 +13,41 @@ import {
   Strikethrough,
   Underline,
 } from 'lucide-react';
-import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import {
+  ensureDisplayHtml,
+  extractLinksFromHtml,
+  getUriScheme,
+  isSafeHref,
+  sanitizeHtml,
+} from '../lib/htmlSanitizer';
 
 interface RichTextEditorProps {
   value: string;
   onChange: (nextHtml: string) => void;
   placeholder?: string;
+  emptyReadOnlyText?: string;
   readOnly?: boolean;
   minHeightClass?: string;
 }
 
+const LINK_PRESETS: Array<{ label: string; prefix: string; defaultText?: string }> = [
+  { label: 'Web', prefix: 'https://' },
+  { label: 'Maps', prefix: 'maps://?q=', defaultText: 'Open in Maps' },
+  { label: 'Google Maps', prefix: 'comgooglemaps://?q=', defaultText: 'Open in Google Maps' },
+  { label: 'Waze', prefix: 'waze://?q=', defaultText: 'Navigate in Waze' },
+  { label: 'Obsidian', prefix: 'obsidian://open?vault=', defaultText: 'Open in Obsidian' },
+  { label: 'Notion', prefix: 'notion://', defaultText: 'Open in Notion' },
+  { label: 'Shortcuts', prefix: 'shortcuts://run-shortcut?name=', defaultText: 'Run Shortcut' },
+  { label: 'WhatsApp', prefix: 'whatsapp://send?text=', defaultText: 'Open WhatsApp' },
+  { label: 'Phone', prefix: 'tel:' },
+  { label: 'Email', prefix: 'mailto:' },
+];
+
 export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   value,
   onChange,
-  placeholder = 'Write itinerary details, reservation numbers, transit notes, or links...',
+  placeholder = 'Write itinerary details, reservation numbers, transit notes, or app links...',
+  emptyReadOnlyText = 'No details logged.',
   readOnly = false,
   minHeightClass = 'min-h-[140px]',
 }) => {
@@ -34,6 +56,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const [sourceMode, setSourceMode] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
   const [linkUrl, setLinkUrl] = useState('https://');
+  const [linkLabel, setLinkLabel] = useState('');
+  const [linkError, setLinkError] = useState<string | null>(null);
   const savedSelectionRef = useRef<Range | null>(null);
 
   useEffect(() => {
@@ -52,6 +76,8 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     }
     lastEmittedRef.current = value;
   }, [value, readOnly, sourceMode]);
+
+  const extractedLinks = useMemo(() => extractLinksFromHtml(value), [value]);
 
   const emitSanitized = () => {
     const el = editorRef.current;
@@ -74,24 +100,44 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     const sel = window.getSelection();
     if (sel && sel.rangeCount > 0) {
       savedSelectionRef.current = sel.getRangeAt(0).cloneRange();
+      const selectedText = sel.toString().trim();
+      return selectedText;
     }
+    savedSelectionRef.current = null;
+    return '';
   };
 
   const handleOpenLinkBar = () => {
     if (readOnly || sourceMode) return;
-    saveSelection();
+    if (linkInputOpen) {
+      setLinkInputOpen(false);
+      return;
+    }
+    const selectedText = saveSelection();
     setLinkUrl('https://');
-    setLinkInputOpen((prev) => !prev);
+    setLinkLabel(selectedText);
+    setLinkError(null);
+    setLinkInputOpen(true);
   };
 
   const handleApplyLink = () => {
     const trimmed = linkUrl.trim();
     if (!trimmed) {
-      setLinkInputOpen(false);
+      setLinkError('Enter a web URL or program link (e.g. obsidian://..., maps://..., tel:...).');
       return;
     }
-    const normalized =
-      /^(https?:\/\/|mailto:|tel:)/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+    const normalized = hasScheme ? trimmed : `https://${trimmed}`;
+
+    if (!isSafeHref(normalized)) {
+      setLinkError('That URI scheme is blocked for security reasons.');
+      return;
+    }
+
+    const scheme = getUriScheme(normalized);
+    const isWeb = scheme === 'http' || scheme === 'https';
+    const displayText = linkLabel.trim() || normalized;
 
     const el = editorRef.current;
     if (el) {
@@ -101,28 +147,35 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
         sel.removeAllRanges();
         sel.addRange(savedSelectionRef.current);
       }
-      if (sel && sel.isCollapsed) {
-        const anchor = document.createElement('a');
-        anchor.href = normalized;
+
+      const anchor = document.createElement('a');
+      anchor.href = normalized;
+      anchor.rel = 'noopener noreferrer';
+      if (isWeb) {
         anchor.target = '_blank';
-        anchor.rel = 'noopener noreferrer';
-        anchor.textContent = normalized;
-        const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
-        if (range) {
-          range.insertNode(anchor);
-          range.setStartAfter(anchor);
-          range.collapse(true);
-          sel.removeAllRanges();
-          sel.addRange(range);
-        } else {
-          el.appendChild(anchor);
-        }
+      }
+      anchor.textContent = displayText;
+
+      const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+      if (range && el.contains(range.commonAncestorContainer)) {
+        range.deleteContents();
+        range.insertNode(anchor);
+        const space = document.createTextNode(' ');
+        anchor.after(space);
+        range.setStartAfter(space);
+        range.collapse(true);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
       } else {
-        document.execCommand('createLink', false, normalized);
+        el.appendChild(anchor);
+        el.appendChild(document.createTextNode(' '));
       }
       emitSanitized();
     }
+
     savedSelectionRef.current = null;
+    setLinkLabel('');
+    setLinkError(null);
     setLinkInputOpen(false);
   };
 
@@ -144,14 +197,41 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   const renderedReadOnlyHtml = sanitizeHtml(ensureDisplayHtml(value));
 
   if (readOnly) {
-    return renderedReadOnlyHtml ? (
-      <div
-        className={`w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-800 leading-relaxed ${minHeightClass} [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-teal-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-teal-700 [&_a]:underline`}
-        dangerouslySetInnerHTML={{ __html: renderedReadOnlyHtml }}
-      />
-    ) : (
-      <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-400">
-        No itinerary details logged.
+    return (
+      <div className="space-y-2">
+        {renderedReadOnlyHtml ? (
+          <div
+            className={`w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-800 leading-relaxed ${minHeightClass} [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-teal-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-teal-700 [&_a]:underline`}
+            dangerouslySetInnerHTML={{ __html: renderedReadOnlyHtml }}
+          />
+        ) : (
+          <div className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-3 text-sm text-slate-400">
+            {emptyReadOnlyText}
+          </div>
+        )}
+
+        {extractedLinks.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {extractedLinks.map((lnk) => (
+              <a
+                key={`${lnk.href}-${lnk.label}`}
+                href={lnk.href}
+                target={lnk.isExternalApp ? undefined : '_blank'}
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-teal-800 hover:bg-teal-50"
+                title={lnk.href}
+              >
+                <ExternalLink className="w-3 h-3 shrink-0" />
+                <span className="truncate max-w-[180px]">{lnk.label}</span>
+                {lnk.isExternalApp && (
+                  <span className="text-[10px] font-mono text-slate-500 uppercase">
+                    {lnk.scheme}
+                  </span>
+                )}
+              </a>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -259,13 +339,14 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
           onMouseDown={(e) => e.preventDefault()}
           onClick={handleOpenLinkBar}
           disabled={sourceMode}
-          title="Insert Link"
-          aria-label="Insert Link"
-          className={`p-1.5 rounded hover:bg-slate-200/70 disabled:opacity-40 ${
+          title="Insert Web or Program Link (https://, obsidian://, maps://, tel:, etc.)"
+          aria-label="Insert Link or Program Link"
+          className={`inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium hover:bg-slate-200/70 disabled:opacity-40 ${
             linkInputOpen ? 'bg-teal-100 text-teal-800' : 'text-slate-700'
           }`}
         >
           <LinkIcon className="w-3.5 h-3.5" />
+          <span>Link / App</span>
         </button>
         <button
           type="button"
@@ -296,36 +377,85 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       </div>
 
       {linkInputOpen && !sourceMode && (
-        <div className="flex items-center gap-2 border-b border-slate-200 bg-teal-50/50 px-3 py-2">
-          <input
-            type="url"
-            value={linkUrl}
-            onChange={(e) => setLinkUrl(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleApplyLink();
-              } else if (e.key === 'Escape') {
-                setLinkInputOpen(false);
-              }
-            }}
-            placeholder="https://example.com/tickets"
-            className="flex-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={handleApplyLink}
-            className="rounded-md bg-teal-700 px-2.5 py-1 text-xs font-semibold text-white hover:bg-teal-800"
-          >
-            Apply
-          </button>
-          <button
-            type="button"
-            onClick={() => setLinkInputOpen(false)}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
-          >
-            Cancel
-          </button>
+        <div className="border-b border-slate-200 bg-teal-50/50 px-3 py-2.5 space-y-2">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+              Presets:
+            </span>
+            {LINK_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  setLinkUrl(preset.prefix);
+                  if (!linkLabel.trim() && preset.defaultText) {
+                    setLinkLabel(preset.defaultText);
+                  }
+                  setLinkError(null);
+                }}
+                className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:border-teal-600 hover:text-teal-800"
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+            <input
+              type="text"
+              inputMode="url"
+              value={linkUrl}
+              onChange={(e) => {
+                setLinkUrl(e.target.value);
+                setLinkError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleApplyLink();
+                } else if (e.key === 'Escape') {
+                  setLinkInputOpen(false);
+                }
+              }}
+              placeholder="https://..., obsidian://open?..., maps://?q=..., tel:+1..."
+              aria-label="URL or program link"
+              className="sm:col-span-6 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-mono text-slate-900 focus:border-teal-700 focus:outline-none"
+            />
+            <input
+              type="text"
+              value={linkLabel}
+              onChange={(e) => setLinkLabel(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleApplyLink();
+                } else if (e.key === 'Escape') {
+                  setLinkInputOpen(false);
+                }
+              }}
+              placeholder="Label (optional, e.g. Open in Maps)"
+              aria-label="Link display text"
+              className="sm:col-span-4 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+            />
+            <div className="sm:col-span-2 flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleApplyLink}
+                className="flex-1 rounded-md bg-teal-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-teal-800"
+              >
+                Insert
+              </button>
+              <button
+                type="button"
+                onClick={() => setLinkInputOpen(false)}
+                className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+
+          {linkError && <p className="text-[11px] text-red-700">{linkError}</p>}
         </div>
       )}
 
@@ -355,6 +485,32 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
             onBlur={emitSanitized}
             className={`w-full px-3.5 py-2.5 text-sm text-slate-900 leading-relaxed focus:outline-none ${minHeightClass} [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-teal-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-teal-700 [&_a]:underline`}
           />
+        </div>
+      )}
+
+      {extractedLinks.length > 0 && (
+        <div className="border-t border-slate-100 bg-slate-50/70 px-3 py-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mr-1">
+            Launch Links:
+          </span>
+          {extractedLinks.map((lnk) => (
+            <a
+              key={`${lnk.href}-${lnk.label}`}
+              href={lnk.href}
+              target={lnk.isExternalApp ? undefined : '_blank'}
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-teal-800 hover:border-teal-600 hover:bg-teal-50/60"
+              title={`Open ${lnk.href}`}
+            >
+              <ExternalLink className="w-3 h-3 shrink-0" />
+              <span className="truncate max-w-[180px]">{lnk.label}</span>
+              {lnk.isExternalApp && (
+                <span className="text-[10px] font-mono text-slate-500 uppercase">
+                  {lnk.scheme}
+                </span>
+              )}
+            </a>
+          ))}
         </div>
       )}
     </div>

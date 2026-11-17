@@ -51,6 +51,7 @@ export interface EventRecord {
 export interface PhotoRecord {
   clientId: string;
   eventClientId: string;
+  bookingClientId?: string;
   filename: string;
   mimeType: string;
   sizeBytes: number;

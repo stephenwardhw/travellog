@@ -341,9 +341,21 @@ export default function App() {
   const photosByEvent = useMemo(() => {
     const map = new Map<string, PhotoRecord[]>();
     for (const p of photos) {
+      if (!p.eventClientId) continue;
       const list = map.get(p.eventClientId) || [];
       list.push(p);
       map.set(p.eventClientId, list);
+    }
+    return map;
+  }, [photos]);
+
+  const photosByBooking = useMemo(() => {
+    const map = new Map<string, PhotoRecord[]>();
+    for (const p of photos) {
+      if (!p.bookingClientId) continue;
+      const list = map.get(p.bookingClientId) || [];
+      list.push(p);
+      map.set(p.bookingClientId, list);
     }
     return map;
   }, [photos]);
@@ -988,6 +1000,36 @@ export default function App() {
     triggerSync();
   };
 
+  const handleAddBookingPhotos = async (bookingClientId: string, fileList: FileList) => {
+    const now = new Date().toISOString();
+    for (const file of Array.from(fileList)) {
+      const thumbBlob = await generateThumbnailBlob(file);
+      const photo: PhotoRecord = {
+        clientId: makeId(),
+        eventClientId: '',
+        bookingClientId,
+        filename: file.name,
+        mimeType: file.type || 'image/jpeg',
+        sizeBytes: file.size,
+        caption: '',
+        createdAt: now,
+        deletedAt: null,
+        blob: file,
+        thumbBlob,
+        hasLocalFile: true,
+        syncStatus: 'pending',
+      };
+      await offlineDb.putPhoto(photo);
+      await offlineDb.enqueue({
+        type: 'photo_upload',
+        clientId: photo.clientId,
+        createdAt: now,
+      });
+    }
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
   const handleDeletePhoto = async (clientId: string) => {
     const existing = await offlineDb.getPhotoRaw(clientId);
     if (!existing) return;
@@ -1184,6 +1226,9 @@ export default function App() {
   const drawerReadOnly = (drawerTrip?.accessRole || 'owner') === 'view';
   const drawerOwnerLabel = drawerTrip?.ownerName || drawerTrip?.ownerEmail || '';
 
+  const activeBookingPhotos = selectedBooking
+    ? photosByBooking.get(selectedBooking.clientId) || []
+    : [];
   const activeBookingPdfs = selectedBooking
     ? pdfsByBooking.get(selectedBooking.clientId) || []
     : [];
@@ -1704,6 +1749,7 @@ export default function App() {
             events={activeTripEvents}
             bookings={activeTripBookings}
             photosByEvent={photosByEvent}
+            photosByBooking={photosByBooking}
             pdfsByEvent={pdfsByEvent}
             pdfsByBooking={pdfsByBooking}
             weather={weather}
@@ -1859,6 +1905,7 @@ export default function App() {
         events={activeTripEvents}
         bookings={activeTripBookings}
         photosByEvent={photosByEvent}
+        photosByBooking={photosByBooking}
         pdfsByEvent={pdfsByEvent}
         pdfsByBooking={pdfsByBooking}
         authToken={session.token}
@@ -1902,14 +1949,20 @@ export default function App() {
         booking={selectedBooking}
         defaultDate={bookingDefaultDate}
         defaultCoords={bookingDefaultCoords}
+        photos={activeBookingPhotos}
         pdfs={activeBookingPdfs}
         readOnly={bookingDrawerReadOnly}
         ownerLabel={bookingDrawerOwnerLabel}
         onClose={() => setBookingDrawerOpen(false)}
         onSaveBooking={handleSaveBooking}
         onDeleteBooking={handleDeleteBooking}
+        onAddBookingPhotos={handleAddBookingPhotos}
+        onDeletePhoto={handleDeletePhoto}
         onAddBookingPdfs={handleAddBookingPdfs}
         onDeletePdf={handleDeletePdf}
+        onOpenPhoto={(list, index, title) =>
+          setLightboxState({ photos: list, initialIndex: index, title })
+        }
       />
 
       {lightboxState && (

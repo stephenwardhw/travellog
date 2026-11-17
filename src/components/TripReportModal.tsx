@@ -26,6 +26,7 @@ interface TripReportModalProps {
   events: EventRecord[];
   bookings?: BookingRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
+  photosByBooking?: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
   pdfsByBooking?: Map<string, PdfRecord[]>;
   authToken: string;
@@ -176,6 +177,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   events,
   bookings = [],
   photosByEvent,
+  photosByBooking = new Map<string, PhotoRecord[]>(),
   pdfsByEvent,
   pdfsByBooking = new Map<string, PdfRecord[]>(),
   authToken,
@@ -223,6 +225,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       pdfCount += pdfsByEvent.get(ev.clientId)?.length || 0;
     }
     for (const bk of sortedBookings) {
+      photoCount += photosByBooking.get(bk.clientId)?.length || 0;
       pdfCount += pdfsByBooking.get(bk.clientId)?.length || 0;
     }
     return {
@@ -237,6 +240,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     sortedBookings,
     groupedByDate.length,
     photosByEvent,
+    photosByBooking,
     pdfsByEvent,
     pdfsByBooking,
   ]);
@@ -258,41 +262,44 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     try {
       const dataUrlByPhotoId = new Map<string, string>();
       if (includePhotos && totals.photos > 0) {
+        const allReportPhotos: PhotoRecord[] = [
+          ...chronologicalEvents.flatMap((ev) => photosByEvent.get(ev.clientId) || []),
+          ...(includeBookings
+            ? sortedBookings.flatMap((bk) => photosByBooking.get(bk.clientId) || [])
+            : []),
+        ];
         let processed = 0;
-        for (const ev of chronologicalEvents) {
-          const evPhotos = photosByEvent.get(ev.clientId) || [];
-          for (const photo of evPhotos) {
-            processed++;
-            setExportStatus(`Embedding photos (${processed} / ${totals.photos})...`);
-            let blobToEmbed: Blob | undefined = photo.blob;
+        for (const photo of allReportPhotos) {
+          processed++;
+          setExportStatus(`Embedding photos (${processed} / ${allReportPhotos.length})...`);
+          let blobToEmbed: Blob | undefined = photo.blob;
 
-            if (!blobToEmbed && navigator.onLine) {
-              try {
-                const res = await fetch(
-                  `/api/photos/${encodeURIComponent(photo.clientId)}/file`,
-                  { headers: { Authorization: `Bearer ${authToken}` } }
-                );
-                if (res.ok) {
-                  blobToEmbed = await res.blob();
-                }
-              } catch {
-                // Fall back to thumb if network fails
+          if (!blobToEmbed && navigator.onLine) {
+            try {
+              const res = await fetch(
+                `/api/photos/${encodeURIComponent(photo.clientId)}/file`,
+                { headers: { Authorization: `Bearer ${authToken}` } }
+              );
+              if (res.ok) {
+                blobToEmbed = await res.blob();
               }
+            } catch {
+              // Fall back to thumb if network fails
             }
+          }
 
-            if (!blobToEmbed) {
-              blobToEmbed = photo.thumbBlob;
-            }
+          if (!blobToEmbed) {
+            blobToEmbed = photo.thumbBlob;
+          }
 
-            if (blobToEmbed) {
-              try {
-                const dataUrl = await blobToDataUrl(blobToEmbed);
-                if (dataUrl) {
-                  dataUrlByPhotoId.set(photo.clientId, dataUrl);
-                }
-              } catch {
-                // Skip unreadable blob
+          if (blobToEmbed) {
+            try {
+              const dataUrl = await blobToDataUrl(blobToEmbed);
+              if (dataUrl) {
+                dataUrlByPhotoId.set(photo.clientId, dataUrl);
               }
+            } catch {
+              // Skip unreadable blob
             }
           }
         }
@@ -311,8 +318,22 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               </div>
               ${sortedBookings
                 .map((bk) => {
+                  const bkPhotos = includePhotos ? photosByBooking.get(bk.clientId) || [] : [];
                   const bkPdfs = includePdfs ? pdfsByBooking.get(bk.clientId) || [] : [];
                   const isConfirmed = bk.status === 'confirmed';
+                  const sanitizedNotesHtml = sanitizeHtml(ensureDisplayHtml(bk.notes));
+                  const bkPhotosHtml =
+                    bkPhotos.length > 0
+                      ? `<div class="photo-grid">${bkPhotos
+                          .map((p) => {
+                            const src = dataUrlByPhotoId.get(p.clientId);
+                            const label = escapeHtml(p.caption || p.filename);
+                            return src
+                              ? `<figure class="photo-card"><img src="${src}" alt="${label}" /><figcaption>${label}</figcaption></figure>`
+                              : `<figure class="photo-card missing"><div class="missing-box">Photo unavailable offline (${label})</div><figcaption>${label}</figcaption></figure>`;
+                          })
+                          .join('')}</div>`
+                      : '';
                   return `
                     <article class="stop">
                       <div class="stop-meta">
@@ -343,7 +364,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                             )}, ${bk.longitude.toFixed(5)}</p>`
                           : ''
                       }
-                      ${bk.notes.trim() ? `<div class="journal">${escapeHtml(bk.notes)}</div>` : ''}
+                      ${sanitizedNotesHtml ? `<div class="journal-html">${sanitizedNotesHtml}</div>` : ''}
+                      ${bkPhotosHtml}
                       ${
                         bkPdfs.length > 0
                           ? `<div class="pdf-list"><strong>Booking Documents:</strong> ${bkPdfs
@@ -888,8 +910,10 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
 
               <div className="space-y-3">
                 {sortedBookings.map((bk) => {
+                  const bkPhotos = includePhotos ? photosByBooking.get(bk.clientId) || [] : [];
                   const bkPdfs = includePdfs ? pdfsByBooking.get(bk.clientId) || [] : [];
                   const isConfirmed = bk.status === 'confirmed';
+                  const sanitizedNotesHtml = sanitizeHtml(ensureDisplayHtml(bk.notes));
                   return (
                     <article
                       key={bk.clientId}
@@ -934,9 +958,24 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                         </p>
                       )}
 
-                      {bk.notes.trim() && (
-                        <div className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-800 whitespace-pre-wrap leading-relaxed">
-                          {bk.notes}
+                      {sanitizedNotesHtml && (
+                        <div
+                          className="rounded-lg bg-slate-50 border border-slate-100 px-4 py-3 text-sm text-slate-800 leading-relaxed [&_h3]:text-base [&_h3]:font-semibold [&_h3]:text-slate-900 [&_h3]:mt-2 [&_h3]:mb-1 [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-1.5 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-1.5 [&_blockquote]:border-l-3 [&_blockquote]:border-indigo-700 [&_blockquote]:pl-3 [&_blockquote]:text-slate-600 [&_blockquote]:italic [&_a]:text-indigo-700 [&_a]:underline"
+                          dangerouslySetInnerHTML={{ __html: sanitizedNotesHtml }}
+                        />
+                      )}
+
+                      {bkPhotos.length > 0 && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-1">
+                          {bkPhotos.map((photo, idx) => (
+                            <ReportPhotoFigure
+                              key={photo.clientId}
+                              photo={photo}
+                              authToken={authToken}
+                              preferFullRes={preferFullRes}
+                              onClick={() => onOpenPhoto(bkPhotos, idx, bk.name)}
+                            />
+                          ))}
                         </div>
                       )}
 

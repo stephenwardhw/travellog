@@ -660,9 +660,15 @@ async function startServer() {
       const eventIds = syncedEvents.map((e) => e.id);
       const bookingIds = syncedBookings.map((b) => b.id);
 
+      const photoFilters = [];
+      if (eventIds.length > 0) photoFilters.push(inArray(photos.eventId, eventIds));
+      if (bookingIds.length > 0) photoFilters.push(inArray(photos.bookingId, bookingIds));
+
       const syncedPhotos =
-        eventIds.length > 0
-          ? await db.select().from(photos).where(inArray(photos.eventId, eventIds))
+        photoFilters.length === 2
+          ? await db.select().from(photos).where(or(photoFilters[0], photoFilters[1]))
+          : photoFilters.length === 1
+          ? await db.select().from(photos).where(photoFilters[0])
           : [];
 
       const pdfFilters = [];
@@ -1287,28 +1293,49 @@ async function startServer() {
         const uploaded = req.files as Record<string, Express.Multer.File[]> | undefined;
         const file = uploaded?.file?.[0];
         const thumb = uploaded?.thumb?.[0];
-        const { clientId, eventClientId, caption } = req.body || {};
+        const { clientId, eventClientId, bookingClientId, caption } = req.body || {};
 
-        if (!file || !clientId || !eventClientId) {
+        const cleanEventClientId =
+          typeof eventClientId === 'string' ? eventClientId.trim() : '';
+        const cleanBookingClientId =
+          typeof bookingClientId === 'string' ? bookingClientId.trim() : '';
+
+        if (!file || !clientId || (!cleanEventClientId && !cleanBookingClientId)) {
           if (file?.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
           if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
           return res.status(400).json({ error: 'Missing photo file or metadata.' });
         }
 
-        const eventAccess = await getEventAccessByClientId(String(eventClientId), userId);
+        let eventId: number | null = null;
+        let bookingId: number | null = null;
+        let role: 'owner' | 'edit' | 'view' | null = null;
 
-        if (!eventAccess) {
-          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-          if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
-          return res.status(404).json({ error: 'Parent event not found on server yet.' });
+        if (cleanEventClientId) {
+          const eventAccess = await getEventAccessByClientId(cleanEventClientId, userId);
+          if (!eventAccess) {
+            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
+            return res.status(404).json({ error: 'Parent event not found on server yet.' });
+          }
+          eventId = eventAccess.event.id;
+          role = eventAccess.role;
+        } else if (cleanBookingClientId) {
+          const bookingAccess = await getBookingAccessByClientId(cleanBookingClientId, userId);
+          if (!bookingAccess) {
+            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+            if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
+            return res.status(404).json({ error: 'Parent booking not found on server yet.' });
+          }
+          bookingId = bookingAccess.booking.id;
+          role = bookingAccess.role;
         }
-        if (eventAccess.role === 'view') {
+
+        if (role === 'view' || !role) {
           if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
           if (thumb?.path && fs.existsSync(thumb.path)) fs.unlinkSync(thumb.path);
           return res.status(403).json({ error: 'View-only access: cannot upload photos to this trip.' });
         }
 
-        const parentEvent = eventAccess.event;
         const relativeDiskPath = path.relative(process.cwd(), file.path);
         const relativeThumbPath = thumb ? path.relative(process.cwd(), thumb.path) : '';
 
@@ -1316,8 +1343,10 @@ async function startServer() {
           .insert(photos)
           .values({
             clientId: String(clientId),
-            eventClientId: String(eventClientId),
-            eventId: parentEvent.id,
+            eventClientId: cleanEventClientId,
+            eventId,
+            bookingClientId: cleanBookingClientId,
+            bookingId,
             userId,
             filename: file.originalname || path.basename(file.path),
             mimeType: file.mimetype || 'image/jpeg',
@@ -1362,7 +1391,11 @@ async function startServer() {
         return res.status(404).json({ error: 'Photo not found.' });
       }
 
-      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      const access = photo.eventClientId
+        ? await getEventAccessByClientId(photo.eventClientId, userId)
+        : photo.bookingClientId
+        ? await getBookingAccessByClientId(photo.bookingClientId, userId)
+        : null;
       if (!access) {
         return res.status(403).json({ error: 'Forbidden' });
       }
@@ -1403,7 +1436,11 @@ async function startServer() {
         return res.status(404).json({ error: 'Photo not found.' });
       }
 
-      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      const access = photo.eventClientId
+        ? await getEventAccessByClientId(photo.eventClientId, userId)
+        : photo.bookingClientId
+        ? await getBookingAccessByClientId(photo.bookingClientId, userId)
+        : null;
       if (!access) {
         return res.status(403).json({ error: 'Forbidden' });
       }
@@ -1436,7 +1473,11 @@ async function startServer() {
         return res.status(404).json({ error: 'Photo not found.' });
       }
 
-      const access = await getEventAccessByClientId(photo.eventClientId, userId);
+      const access = photo.eventClientId
+        ? await getEventAccessByClientId(photo.eventClientId, userId)
+        : photo.bookingClientId
+        ? await getBookingAccessByClientId(photo.bookingClientId, userId)
+        : null;
       if (!access || access.role === 'view') {
         return res.status(403).json({ error: 'You do not have permission to delete this photo.' });
       }

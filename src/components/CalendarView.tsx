@@ -508,6 +508,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
                             .join(' · ')}
                         </p>
                       )}
+                      {htmlToPlainText(bk.notes) && (
+                        <p className="text-xs text-slate-500 line-clamp-2 mt-1">
+                          {htmlToPlainText(bk.notes)}
+                        </p>
+                      )}
                     </button>
                   );
                 })}
