@@ -1953,6 +1953,7 @@ export default function App() {
         pdfs={activeBookingPdfs}
         readOnly={bookingDrawerReadOnly}
         ownerLabel={bookingDrawerOwnerLabel}
+        authToken={session.token}
         onClose={() => setBookingDrawerOpen(false)}
         onSaveBooking={handleSaveBooking}
         onDeleteBooking={handleDeleteBooking}

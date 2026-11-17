@@ -8,7 +8,9 @@ import {
   FileText,
   HardDrive,
   LocateFixed,
+  MapPin,
   Maximize2,
+  Search,
   Trash2,
   Upload,
   X,
@@ -16,7 +18,15 @@ import {
 import { extractPdfText } from '../lib/pdfExtractor';
 import { sanitizeHtml } from '../lib/htmlSanitizer';
 import { RichTextEditor } from './RichTextEditor';
+import { MiniCartoMap } from './MiniCartoMap';
 import type { BookingRecord, BookingStatus, PdfRecord, PhotoRecord } from '../types/journal';
+
+interface GeocodeCandidate {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+  category?: string;
+}
 
 interface BookingDetailDrawerProps {
   open: boolean;
@@ -49,6 +59,7 @@ interface BookingDetailDrawerProps {
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   readOnly?: boolean;
   ownerLabel?: string;
+  authToken?: string;
 }
 
 const StayPhotoCard: React.FC<{
@@ -136,6 +147,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   onOpenPhoto,
   readOnly = false,
   ownerLabel,
+  authToken,
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [name, setName] = useState('');
@@ -151,6 +163,11 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   const [attachingPhotos, setAttachingPhotos] = useState(false);
   const [extractingPdf, setExtractingPdf] = useState(false);
   const [locatingGps, setLocatingGps] = useState(false);
+  const [geoSearchQuery, setGeoSearchQuery] = useState('');
+  const [geoResults, setGeoResults] = useState<GeocodeCandidate[]>([]);
+  const [searchingGeo, setSearchingGeo] = useState(false);
+  const [geoNotice, setGeoNotice] = useState<string | null>(null);
+  const [showMapPicker, setShowMapPicker] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -177,6 +194,10 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
         : ''
     );
     setNotes(booking?.notes || '');
+    setGeoSearchQuery('');
+    setGeoResults([]);
+    setGeoNotice(null);
+    setShowMapPicker(false);
     setError(null);
   }, [open, booking, defaultDate, defaultCoords, today]);
 
@@ -184,7 +205,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
 
   const persistCurrentBooking = async (): Promise<BookingRecord> => {
     if (!name.trim()) {
-      throw new Error('Accommodation / stay name is required before saving.');
+      throw new Error('Property / stay name is required before saving or attaching photos/PDFs.');
     }
     if (!checkInDate || !checkOutDate) {
       throw new Error('Both check-in and check-out dates are required.');
@@ -270,6 +291,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
       (pos) => {
         setLatitude(pos.coords.latitude.toFixed(5));
         setLongitude(pos.coords.longitude.toFixed(5));
+        setGeoNotice('Coordinates updated from current GPS position.');
         setLocatingGps(false);
       },
       () => {
@@ -278,6 +300,63 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
       }
     );
   };
+
+  const handleGeocodeLookup = async (overrideQuery?: string) => {
+    const query = (overrideQuery !== undefined ? overrideQuery : geoSearchQuery).trim();
+    if (!query) {
+      setGeoNotice('Enter an address, hotel name, or landmark to look up coordinates.');
+      return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setGeoNotice('Offline — address lookup requires an internet connection, or click "Pick on Map".');
+      return;
+    }
+
+    if (overrideQuery !== undefined) {
+      setGeoSearchQuery(query);
+    }
+
+    setSearchingGeo(true);
+    setGeoNotice(null);
+    setError(null);
+    try {
+      const headers: Record<string, string> = {};
+      if (authToken) {
+        headers.Authorization = `Bearer ${authToken}`;
+      }
+      const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, { headers });
+      const data = (await res.json()) as {
+        results?: GeocodeCandidate[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setGeoNotice(data?.error || 'Unable to look up that location.');
+        setGeoResults([]);
+        return;
+      }
+      const found = Array.isArray(data.results) ? data.results : [];
+      setGeoResults(found);
+      if (found.length > 0) {
+        setLatitude(found[0].latitude.toFixed(5));
+        setLongitude(found[0].longitude.toFixed(5));
+        setGeoNotice(null);
+      } else {
+        setGeoNotice(
+          'No matching coordinates found. Try simplifying the address or searching the hotel name + city.'
+        );
+      }
+    } catch {
+      setGeoNotice('Could not reach location lookup service.');
+    } finally {
+      setSearchingGeo(false);
+    }
+  };
+
+  const parsedLat =
+    latitude.trim() !== '' && Number.isFinite(Number(latitude)) ? Number(latitude) : null;
+  const parsedLng =
+    longitude.trim() !== '' && Number.isFinite(Number(longitude)) ? Number(longitude) : null;
+  const hasCoordinates = parsedLat !== null && parsedLng !== null;
 
   const handleOpenPdf = (pdf: PdfRecord) => {
     if (!pdf.blob) {
@@ -456,9 +535,26 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Address (optional)
-              </label>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-medium text-slate-700">
+                  Address (optional)
+                </label>
+                {!readOnly && (address.trim() || name.trim()) && (
+                  <button
+                    type="button"
+                    disabled={searchingGeo}
+                    onClick={() => handleGeocodeLookup(address.trim() || name.trim())}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 hover:text-indigo-800 disabled:opacity-50"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    {searchingGeo
+                      ? 'Looking up...'
+                      : address.trim()
+                      ? 'Look up Lat/Lng from Address'
+                      : 'Look up from Stay Name'}
+                  </button>
+                )}
+              </div>
               <input
                 type="text"
                 value={address}
@@ -469,23 +565,104 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
               />
             </div>
 
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-medium text-slate-700">
-                  Latitude &amp; Longitude (shows stay pin on Map)
+                  Location &amp; Coordinates (shows stay pin on Map)
                 </label>
                 {!readOnly && (
-                  <button
-                    type="button"
-                    onClick={handleUseGps}
-                    disabled={locatingGps}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
-                  >
-                    <LocateFixed className="w-3.5 h-3.5" />
-                    {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
-                  </button>
+                  <div className="flex items-center gap-3">
+                    {!hasCoordinates && (
+                      <button
+                        type="button"
+                        onClick={() => setShowMapPicker((v) => !v)}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-indigo-700 hover:text-indigo-800"
+                      >
+                        <MapPin className="w-3.5 h-3.5" />
+                        {showMapPicker ? 'Hide Map Picker' : 'Pick on Map'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleUseGps}
+                      disabled={locatingGps}
+                      className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800"
+                    >
+                      <LocateFixed className="w-3.5 h-3.5" />
+                      {locatingGps ? 'Reading GPS...' : 'Use current GPS'}
+                    </button>
+                  </div>
                 )}
               </div>
+
+              {!readOnly && (
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={geoSearchQuery}
+                      onChange={(e) => setGeoSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleGeocodeLookup();
+                        }
+                      }}
+                      placeholder="Search address, hotel, or landmark to find coordinates..."
+                      aria-label="Search stay location for coordinates"
+                      className="w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3 py-2 text-xs text-slate-900 focus:border-teal-700 focus:outline-none"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    disabled={searchingGeo}
+                    onClick={() => handleGeocodeLookup()}
+                    className="rounded-lg bg-indigo-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-800 disabled:opacity-60 whitespace-nowrap"
+                  >
+                    {searchingGeo ? 'Searching...' : 'Find'}
+                  </button>
+                </div>
+              )}
+
+              {geoNotice && (
+                <p className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  {geoNotice}
+                </p>
+              )}
+
+              {!readOnly && geoResults.length > 0 && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200 overflow-hidden">
+                  {geoResults.map((item, idx) => {
+                    const isActiveMatch =
+                      parsedLat !== null &&
+                      parsedLng !== null &&
+                      Math.abs(parsedLat - item.latitude) < 0.0002 &&
+                      Math.abs(parsedLng - item.longitude) < 0.0002;
+                    return (
+                      <button
+                        key={`${item.latitude}-${item.longitude}-${idx}`}
+                        type="button"
+                        onClick={() => {
+                          setLatitude(item.latitude.toFixed(5));
+                          setLongitude(item.longitude.toFixed(5));
+                        }}
+                        className={`w-full text-left px-3 py-2 text-xs flex items-start justify-between gap-2 transition-colors ${
+                          isActiveMatch
+                            ? 'bg-indigo-50 text-indigo-950 font-medium'
+                            : 'hover:bg-white text-slate-700'
+                        }`}
+                      >
+                        <span className="line-clamp-2 flex-1">{item.displayName}</span>
+                        <span className="font-mono text-[10px] text-slate-500 tabular-nums shrink-0 mt-0.5">
+                          {item.latitude.toFixed(4)}, {item.longitude.toFixed(4)}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <input
                   type="number"
@@ -506,6 +683,22 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                   className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 font-mono text-xs text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
+
+              {(hasCoordinates || (!readOnly && showMapPicker)) && (
+                <MiniCartoMap
+                  latitude={parsedLat}
+                  longitude={parsedLng}
+                  title={name || 'Stay Location'}
+                  status={status}
+                  interactive={!readOnly}
+                  allowEmptyMap={!readOnly && showMapPicker}
+                  defaultCenter={defaultCoords}
+                  onChangeCoordinates={(lat, lng) => {
+                    setLatitude(lat.toFixed(5));
+                    setLongitude(lng.toFixed(5));
+                  }}
+                />
+              )}
             </div>
 
             <div>

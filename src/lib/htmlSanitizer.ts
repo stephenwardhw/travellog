@@ -45,7 +45,7 @@ function stripControlChars(value: string): string {
 
 export function getUriScheme(href: string): string {
   const cleaned = stripControlChars(href || '').toLowerCase();
-  const match = cleaned.match(/^([a-z][a-z0-9+.-]*):/);
+  const match = cleaned.match(/^([a-z][a-z0-9+_.-]*):/);
   return match ? match[1] : '';
 }
 
@@ -53,7 +53,7 @@ export function isSafeHref(href: string): boolean {
   const trimmed = (href || '').trim();
   if (!trimmed) return false;
   const normalized = stripControlChars(trimmed).toLowerCase();
-  const schemeMatch = normalized.match(/^([a-z][a-z0-9+.-]*):/);
+  const schemeMatch = normalized.match(/^([a-z][a-z0-9+_.-]*):/);
   if (!schemeMatch) return false;
 
   const scheme = schemeMatch[1];

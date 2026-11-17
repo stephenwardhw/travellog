@@ -37,6 +37,8 @@ const LINK_PRESETS: Array<{ label: string; prefix: string; defaultText?: string 
   { label: 'Waze', prefix: 'waze://?q=', defaultText: 'Navigate in Waze' },
   { label: 'Obsidian', prefix: 'obsidian://open?vault=', defaultText: 'Open in Obsidian' },
   { label: 'Notion', prefix: 'notion://', defaultText: 'Open in Notion' },
+  { label: 'Apple Notes', prefix: 'mobilenotes://', defaultText: 'Open Apple Notes' },
+  { label: 'OneNote', prefix: 'onenote:', defaultText: 'Open in OneNote' },
   { label: 'Shortcuts', prefix: 'shortcuts://run-shortcut?name=', defaultText: 'Run Shortcut' },
   { label: 'WhatsApp', prefix: 'whatsapp://send?text=', defaultText: 'Open WhatsApp' },
   { label: 'Phone', prefix: 'tel:' },
@@ -52,6 +54,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
   minHeightClass = 'min-h-[140px]',
 }) => {
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const linkInputRef = useRef<HTMLInputElement | null>(null);
   const lastEmittedRef = useRef<string>(value);
   const [sourceMode, setSourceMode] = useState(false);
   const [linkInputOpen, setLinkInputOpen] = useState(false);
@@ -118,6 +121,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
     setLinkLabel(selectedText);
     setLinkError(null);
     setLinkInputOpen(true);
+    setTimeout(() => linkInputRef.current?.focus(), 0);
   };
 
   const handleApplyLink = () => {
@@ -127,7 +131,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
       return;
     }
 
-    const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+    const hasScheme = /^[a-z][a-z0-9+_.-]*:/i.test(trimmed);
     const normalized = hasScheme ? trimmed : `https://${trimmed}`;
 
     if (!isSafeHref(normalized)) {
@@ -392,6 +396,13 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
                     setLinkLabel(preset.defaultText);
                   }
                   setLinkError(null);
+                  setTimeout(() => {
+                    const input = linkInputRef.current;
+                    if (input) {
+                      input.focus();
+                      input.setSelectionRange(preset.prefix.length, preset.prefix.length);
+                    }
+                  }, 0);
                 }}
                 className="rounded-md border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:border-teal-600 hover:text-teal-800"
               >
@@ -402,6 +413,7 @@ export const RichTextEditor: React.FC<RichTextEditorProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
             <input
+              ref={linkInputRef}
               type="text"
               inputMode="url"
               value={linkUrl}

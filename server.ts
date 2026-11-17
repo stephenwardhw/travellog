@@ -148,6 +148,107 @@ async function geocodeDestination(rawDestination: string): Promise<GeoCandidate 
   return null;
 }
 
+interface GeocodeSearchResult {
+  displayName: string;
+  latitude: number;
+  longitude: number;
+  category?: string;
+}
+
+async function geocodeAddressOrPlace(rawQuery: string): Promise<GeocodeSearchResult[]> {
+  const cleaned = rawQuery.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return [];
+
+  const results: GeocodeSearchResult[] = [];
+  const seen = new Set<string>();
+
+  const pushUnique = (item: GeocodeSearchResult) => {
+    if (!Number.isFinite(item.latitude) || !Number.isFinite(item.longitude)) return;
+    const lat = Number(item.latitude.toFixed(6));
+    const lng = Number(item.longitude.toFixed(6));
+    const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    results.push({
+      displayName: item.displayName,
+      latitude: lat,
+      longitude: lng,
+      category: item.category,
+    });
+  };
+
+  try {
+    const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&q=${encodeURIComponent(
+      cleaned
+    )}`;
+    const nomRes = await fetch(nominatimUrl, {
+      headers: {
+        'User-Agent': 'TravelLog/1.0 (https://travellog.local)',
+        'Accept-Language': 'en',
+      },
+    });
+    if (nomRes.ok) {
+      const rows = (await nomRes.json()) as Array<{
+        display_name?: string;
+        lat?: string;
+        lon?: string;
+        type?: string;
+        class?: string;
+      }>;
+      if (Array.isArray(rows)) {
+        for (const row of rows) {
+          const lat = Number(row.lat);
+          const lng = Number(row.lon);
+          if (row.display_name && Number.isFinite(lat) && Number.isFinite(lng)) {
+            pushUnique({
+              displayName: row.display_name,
+              latitude: lat,
+              longitude: lng,
+              category: row.type || row.class,
+            });
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Nominatim geocode lookup failed, falling back:', err);
+  }
+
+  if (results.length === 0) {
+    const fallbackCandidates = [cleaned];
+    if (cleaned.includes(',')) {
+      fallbackCandidates.push(cleaned.split(',')[0].trim());
+    }
+    for (const q of fallbackCandidates) {
+      if (!q) continue;
+      try {
+        const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+          q
+        )}&count=5&language=en&format=json`;
+        const geoRes = await fetch(url);
+        if (!geoRes.ok) continue;
+        const geoJson = (await geoRes.json()) as { results?: GeoCandidate[] };
+        if (Array.isArray(geoJson.results)) {
+          for (const candidate of geoJson.results) {
+            const parts = [candidate.name, candidate.admin1, candidate.country].filter(Boolean);
+            pushUnique({
+              displayName: parts.join(', '),
+              latitude: candidate.latitude,
+              longitude: candidate.longitude,
+              category: 'place',
+            });
+          }
+        }
+        if (results.length > 0) break;
+      } catch {
+        // Ignore fallback failure
+      }
+    }
+  }
+
+  return results.slice(0, 5);
+}
+
 const photoUpload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -1157,6 +1258,20 @@ async function startServer() {
     } catch (error: unknown) {
       console.error('Packing item delete failed:', error);
       res.status(500).json({ error: 'Failed to delete packing item.' });
+    }
+  });
+
+  app.get('/api/geocode', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const query = String(req.query.q || '').trim();
+      if (!query) {
+        return res.status(400).json({ error: 'Enter an address or place name to search.' });
+      }
+      const results = await geocodeAddressOrPlace(query);
+      res.json({ query, results });
+    } catch (error: unknown) {
+      console.error('Geocode lookup failed:', error);
+      res.status(500).json({ error: 'Failed to look up coordinates for that location.' });
     }
   });
 

@@ -307,7 +307,10 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                   key={bk.clientId}
                   role="button"
                   tabIndex={0}
-                  onClick={() => onSelectBooking?.(bk)}
+                  onClick={(e) => {
+                    if ((e.target as HTMLElement).closest('a')) return;
+                    onSelectBooking?.(bk);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
                       e.preventDefault();
@@ -460,7 +463,10 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                         key={ev.clientId}
                         role="button"
                         tabIndex={0}
-                        onClick={() => onSelectEvent(ev)}
+                        onClick={(e) => {
+                          if ((e.target as HTMLElement).closest('a')) return;
+                          onSelectEvent(ev);
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
