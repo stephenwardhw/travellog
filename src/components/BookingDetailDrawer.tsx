@@ -19,6 +19,7 @@ import { extractPdfText } from '../lib/pdfExtractor';
 import { sanitizeHtml } from '../lib/htmlSanitizer';
 import { RichTextEditor } from './RichTextEditor';
 import { MiniCartoMap } from './MiniCartoMap';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { BookingRecord, BookingStatus, PdfRecord, PhotoRecord } from '../types/journal';
 
 interface GeocodeCandidate {
@@ -169,6 +170,13 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   const [geoNotice, setGeoNotice] = useState<string | null>(null);
   const [showMapPicker, setShowMapPicker] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<
+    | { type: 'booking' }
+    | { type: 'photo'; clientId: string; name: string }
+    | { type: 'pdf'; clientId: string; name: string }
+    | null
+  >(null);
+  const [deletingItem, setDeletingItem] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -198,6 +206,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
     setGeoResults([]);
     setGeoNotice(null);
     setShowMapPicker(false);
+    setPendingDelete(null);
     setError(null);
   }, [open, booking, defaultDate, defaultCoords, today]);
 
@@ -397,10 +406,7 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
             {booking && !readOnly && (
               <button
                 type="button"
-                onClick={async () => {
-                  await onDeleteBooking(booking.clientId);
-                  onClose();
-                }}
+                onClick={() => setPendingDelete({ type: 'booking' })}
                 className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
                 aria-label="Delete booking"
               >
@@ -758,7 +764,13 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                     photo={photo}
                     readOnly={readOnly}
                     onOpen={() => onOpenPhoto(photos, idx, name || booking?.name)}
-                    onDelete={() => onDeletePhoto(photo.clientId)}
+                    onDelete={() =>
+                      setPendingDelete({
+                        type: 'photo',
+                        clientId: photo.clientId,
+                        name: photo.filename,
+                      })
+                    }
                   />
                 ))}
               </div>
@@ -832,7 +844,13 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                       {!readOnly && (
                         <button
                           type="button"
-                          onClick={() => onDeletePdf(pdf.clientId)}
+                          onClick={() =>
+                            setPendingDelete({
+                              type: 'pdf',
+                              clientId: pdf.clientId,
+                              name: pdf.filename,
+                            })
+                          }
                           className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-white"
                           aria-label={`Delete ${pdf.filename}`}
                         >
@@ -877,6 +895,56 @@ export const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title={
+          pendingDelete?.type === 'booking'
+            ? 'Delete Stay / Booking'
+            : pendingDelete?.type === 'photo'
+            ? 'Delete Stay Photo'
+            : 'Delete Booking PDF'
+        }
+        message={
+          pendingDelete?.type === 'booking'
+            ? `Are you sure you want to delete "${name || 'this stay'}"?`
+            : pendingDelete?.type === 'photo'
+            ? `Permanently delete stay photo "${pendingDelete.name}"?`
+            : pendingDelete?.type === 'pdf'
+            ? `Permanently delete booking PDF "${pendingDelete.name}"?`
+            : ''
+        }
+        confirmLabel={
+          pendingDelete?.type === 'booking'
+            ? 'Delete Stay'
+            : pendingDelete?.type === 'photo'
+            ? 'Delete Photo'
+            : 'Delete PDF'
+        }
+        busy={deletingItem}
+        onConfirm={async () => {
+          if (!pendingDelete) return;
+          setDeletingItem(true);
+          try {
+            if (pendingDelete.type === 'booking' && booking) {
+              await onDeleteBooking(booking.clientId);
+              setPendingDelete(null);
+              onClose();
+            } else if (pendingDelete.type === 'photo') {
+              await onDeletePhoto(pendingDelete.clientId);
+              setPendingDelete(null);
+            } else if (pendingDelete.type === 'pdf') {
+              await onDeletePdf(pendingDelete.clientId);
+              setPendingDelete(null);
+            }
+          } finally {
+            setDeletingItem(false);
+          }
+        }}
+        onCancel={() => {
+          if (!deletingItem) setPendingDelete(null);
+        }}
+      />
     </div>
   );
 };

@@ -7,6 +7,15 @@ export interface TripRecord {
   startDate: string; // YYYY-MM-DD
   endDate: string; // YYYY-MM-DD
   description: string;
+  startLocationName?: string;
+  startLatitude?: number | null;
+  startLongitude?: number | null;
+  endLocationName?: string;
+  endLatitude?: number | null;
+  endLongitude?: number | null;
+  targetBudget?: number | null;
+  budgetCurrency?: string;
+  archivedAt?: string | null;
   updatedAt: string;
   createdAt: string;
   deletedAt: string | null;
@@ -14,6 +23,24 @@ export interface TripRecord {
   ownerName?: string;
   ownerEmail?: string;
   syncStatus?: 'synced' | 'pending';
+}
+
+export interface AdminTripSummary {
+  id: number;
+  clientId: string;
+  title: string;
+  destination: string;
+  startDate: string;
+  endDate: string;
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  ownerId: number;
+  ownerName: string;
+  ownerEmail: string;
+  eventCount: number;
+  bookingCount: number;
+  expenseCount: number;
 }
 
 export interface TripShareRecord {
@@ -38,6 +65,7 @@ export interface EventRecord {
   eventDate: string; // YYYY-MM-DD
   eventTime: string;
   location: string;
+  address?: string;
   latitude: number | null;
   longitude: number | null;
   details: string;
@@ -150,6 +178,38 @@ export interface WeatherForecastResponse {
   days: WeatherDay[];
 }
 
+export type ExpenseCategory =
+  | 'Lodging'
+  | 'Food & Dining'
+  | 'Transport'
+  | 'Activities'
+  | 'Shopping'
+  | 'Other';
+
+export type PaymentMethod =
+  | 'Credit Card'
+  | 'Debit Card'
+  | 'Cash'
+  | 'Digital Wallet'
+  | 'Bank Transfer'
+  | 'Other';
+
+export interface ExpenseRecord {
+  clientId: string;
+  tripClientId: string;
+  title: string;
+  amount: number;
+  currency: string;
+  expenseDate: string; // YYYY-MM-DD
+  category: ExpenseCategory;
+  paymentMethod: PaymentMethod;
+  notes: string;
+  updatedAt: string;
+  createdAt: string;
+  deletedAt: string | null;
+  syncStatus?: 'synced' | 'pending';
+}
+
 export type SyncOpType =
   | 'trip_upsert'
   | 'trip_delete'
@@ -159,6 +219,8 @@ export type SyncOpType =
   | 'booking_delete'
   | 'packing_upsert'
   | 'packing_delete'
+  | 'expense_upsert'
+  | 'expense_delete'
   | 'photo_upload'
   | 'photo_delete'
   | 'pdf_upload'
@@ -185,7 +247,7 @@ export interface AuthSession {
   user: LocalUser;
 }
 
-export type AppView = 'agenda' | 'calendar' | 'map' | 'packing' | 'search' | 'admin';
+export type AppView = 'agenda' | 'calendar' | 'map' | 'packing' | 'budget' | 'search' | 'admin';
 
 export interface SearchMatch {
   event?: EventRecord;

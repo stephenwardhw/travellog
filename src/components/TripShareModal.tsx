@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Share2, Trash2, UserPlus, WifiOff, X } from 'lucide-react';
 import { useNetworkStatus } from '../lib/network';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { ShareableUser, TripRecord, TripShareRecord } from '../types/journal';
 
 interface TripShareModalProps {
@@ -27,6 +28,7 @@ export const TripShareModal: React.FC<TripShareModalProps> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingRemoveShare, setPendingRemoveShare] = useState<TripShareRecord | null>(null);
 
   const loadSharingData = useCallback(async () => {
     if (!open || !trip) return;
@@ -312,7 +314,7 @@ export const TripShareModal: React.FC<TripShareModalProps> = ({
                     <button
                       type="button"
                       disabled={!isOnline || saving}
-                      onClick={() => handleRemoveShare(s.userId)}
+                      onClick={() => setPendingRemoveShare(s)}
                       aria-label={`Remove ${s.email}`}
                       className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg border border-slate-200 text-slate-500 hover:text-red-600 hover:bg-red-50 disabled:opacity-45"
                     >
@@ -325,6 +327,27 @@ export const TripShareModal: React.FC<TripShareModalProps> = ({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingRemoveShare)}
+        title="Revoke Trip Access?"
+        message={
+          pendingRemoveShare
+            ? `Remove ${pendingRemoveShare.name || pendingRemoveShare.email}'s access to "${trip.title}"?`
+            : ''
+        }
+        confirmLabel="Remove Access"
+        busy={saving}
+        onCancel={() => {
+          if (!saving) setPendingRemoveShare(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingRemoveShare) return;
+          const targetId = pendingRemoveShare.userId;
+          await handleRemoveShare(targetId);
+          setPendingRemoveShare(null);
+        }}
+      />
     </div>
   );
 };

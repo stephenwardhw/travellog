@@ -30,6 +30,15 @@ export const trips = pgTable('trips', {
   startDate: text('start_date').notNull(),
   endDate: text('end_date').notNull(),
   description: text('description').notNull().default(''),
+  startLocationName: text('start_location_name').notNull().default(''),
+  startLatitude: doublePrecision('start_latitude'),
+  startLongitude: doublePrecision('start_longitude'),
+  endLocationName: text('end_location_name').notNull().default(''),
+  endLatitude: doublePrecision('end_latitude'),
+  endLongitude: doublePrecision('end_longitude'),
+  targetBudget: doublePrecision('target_budget'),
+  budgetCurrency: text('budget_currency').notNull().default('USD'),
+  archivedAt: timestamp('archived_at'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
@@ -48,6 +57,7 @@ export const events = pgTable('events', {
   eventDate: text('event_date').notNull(),
   eventTime: text('event_time').notNull().default(''),
   location: text('location').notNull(),
+  address: text('address').notNull().default(''),
   latitude: doublePrecision('latitude'),
   longitude: doublePrecision('longitude'),
   details: text('details').notNull().default(''),
@@ -153,6 +163,28 @@ export const packingItems = pgTable('packing_items', {
   deletedAt: timestamp('deleted_at'),
 });
 
+export const expenses = pgTable('expenses', {
+  id: serial('id').primaryKey(),
+  clientId: text('client_id').notNull().unique(),
+  tripClientId: text('trip_client_id').notNull(),
+  tripId: integer('trip_id')
+    .references(() => trips.id, { onDelete: 'cascade' })
+    .notNull(),
+  userId: integer('user_id')
+    .references(() => users.id, { onDelete: 'cascade' })
+    .notNull(),
+  title: text('title').notNull(),
+  amount: doublePrecision('amount').notNull(),
+  currency: text('currency').notNull().default('USD'),
+  expenseDate: text('expense_date').notNull(),
+  category: text('category').notNull().default('Other'),
+  paymentMethod: text('payment_method').notNull().default('Credit Card'),
+  notes: text('notes').notNull().default(''),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  deletedAt: timestamp('deleted_at'),
+});
+
 export const appSettings = pgTable('app_settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
@@ -165,6 +197,7 @@ export const usersRelations = relations(users, ({ many }) => ({
   events: many(events),
   bookings: many(bookings),
   packingItems: many(packingItems),
+  expenses: many(expenses),
   photos: many(photos),
   pdfs: many(pdfs),
 }));
@@ -178,6 +211,7 @@ export const tripsRelations = relations(trips, ({ one, many }) => ({
   events: many(events),
   bookings: many(bookings),
   packingItems: many(packingItems),
+  expenses: many(expenses),
 }));
 
 export const packingItemsRelations = relations(packingItems, ({ one }) => ({
@@ -187,6 +221,17 @@ export const packingItemsRelations = relations(packingItems, ({ one }) => ({
   }),
   user: one(users, {
     fields: [packingItems.userId],
+    references: [users.id],
+  }),
+}));
+
+export const expensesRelations = relations(expenses, ({ one }) => ({
+  trip: one(trips, {
+    fields: [expenses.tripId],
+    references: [trips.id],
+  }),
+  user: one(users, {
+    fields: [expenses.userId],
     references: [users.id],
   }),
 }));

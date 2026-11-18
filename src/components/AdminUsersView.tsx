@@ -1,8 +1,22 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Palette, RotateCcw, Shield, Trash2, UserPlus, WifiOff } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Archive,
+  ArchiveRestore,
+  Calendar,
+  KeyRound,
+  MapPin,
+  Palette,
+  RotateCcw,
+  Shield,
+  Trash2,
+  UserPlus,
+  WifiOff,
+} from 'lucide-react';
 import { useNetworkStatus } from '../lib/network';
+import { ConfirmDialog } from './ConfirmDialog';
 import {
   DEFAULT_CALENDAR_SETTINGS,
+  type AdminTripSummary,
   type CalendarThemeSettings,
   type LocalUser,
 } from '../types/journal';
@@ -12,6 +26,7 @@ interface AdminUsersViewProps {
   currentUser: LocalUser;
   calendarSettings: CalendarThemeSettings;
   onCalendarSettingsSaved: (settings: CalendarThemeSettings) => Promise<void> | void;
+  onTripsChanged?: (deletedClientId?: string) => Promise<void> | void;
   onUnauthorized: () => void;
 }
 
@@ -52,6 +67,7 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   currentUser,
   calendarSettings,
   onCalendarSettingsSaved,
+  onTripsChanged,
   onUnauthorized,
 }) => {
   const { isOnline } = useNetworkStatus();
@@ -59,6 +75,16 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // Admin Trip Management state
+  const [adminTrips, setAdminTrips] = useState<AdminTripSummary[]>([]);
+  const [tripsLoading, setTripsLoading] = useState(true);
+  const [tripFilter, setTripFilter] = useState<'all' | 'active' | 'archived'>('all');
+  const [tripBusyClientId, setTripBusyClientId] = useState<string | null>(null);
+  const [pendingTripAction, setPendingTripAction] = useState<{
+    trip: AdminTripSummary;
+    action: 'archive' | 'delete';
+  } | null>(null);
 
   // Calendar color settings state
   const [eventDayBg, setEventDayBg] = useState(calendarSettings.eventDayBg);
@@ -72,8 +98,8 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   const [role, setRole] = useState<'user' | 'admin'>('user');
   const [creating, setCreating] = useState(false);
 
-  // Confirm delete / password reset inline state
-  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  // Confirm delete / password reset state
+  const [pendingDeleteUser, setPendingDeleteUser] = useState<LocalUser | null>(null);
   const [resetUserId, setResetUserId] = useState<number | null>(null);
   const [resetPasswordValue, setResetPasswordValue] = useState('');
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -103,6 +129,30 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
     }
   }, [token, isOnline, onUnauthorized]);
 
+  const loadAdminTrips = useCallback(async () => {
+    if (!isOnline) {
+      setTripsLoading(false);
+      return;
+    }
+    setTripsLoading(true);
+    try {
+      const res = await fetch('/api/admin/trips', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to load trips.');
+      setAdminTrips(data.trips || []);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to load trips.');
+    } finally {
+      setTripsLoading(false);
+    }
+  }, [token, isOnline, onUnauthorized]);
+
   useEffect(() => {
     setEventDayBg(calendarSettings.eventDayBg);
     setTripDayBg(calendarSettings.tripDayBg);
@@ -110,7 +160,23 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
 
   useEffect(() => {
     loadUsers();
-  }, [loadUsers]);
+    loadAdminTrips();
+  }, [loadUsers, loadAdminTrips]);
+
+  const filteredTrips = useMemo(() => {
+    if (tripFilter === 'active') return adminTrips.filter((t) => !t.archivedAt);
+    if (tripFilter === 'archived') return adminTrips.filter((t) => Boolean(t.archivedAt));
+    return adminTrips;
+  }, [adminTrips, tripFilter]);
+
+  const activeTripCount = useMemo(
+    () => adminTrips.filter((t) => !t.archivedAt).length,
+    [adminTrips]
+  );
+  const archivedTripCount = useMemo(
+    () => adminTrips.filter((t) => Boolean(t.archivedAt)).length,
+    [adminTrips]
+  );
 
   const persistCalendarColors = async (next: CalendarThemeSettings, successMessage: string) => {
     setSavingColors(true);
@@ -270,13 +336,75 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
       }
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || 'Failed to delete user.');
-      setConfirmDeleteId(null);
+      setPendingDeleteUser(null);
       setNotice(`Deleted user ${target.email}.`);
       await loadUsers();
+      await loadAdminTrips();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to delete user.');
     } finally {
       setBusyId(null);
+    }
+  };
+
+  const handleToggleArchiveTrip = async (target: AdminTripSummary, archived: boolean) => {
+    setTripBusyClientId(target.clientId);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(
+        `/api/admin/trips/${encodeURIComponent(target.clientId)}/archive`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ archived }),
+        }
+      );
+      if (res.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to update trip archive state.');
+      setNotice(
+        archived
+          ? `Archived trip "${target.title}".`
+          : `Restored trip "${target.title}" to active dropdowns.`
+      );
+      await loadAdminTrips();
+      await onTripsChanged?.();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to update trip archive state.');
+    } finally {
+      setTripBusyClientId(null);
+    }
+  };
+
+  const handlePermanentDeleteTrip = async (target: AdminTripSummary) => {
+    setTripBusyClientId(target.clientId);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/admin/trips/${encodeURIComponent(target.clientId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete trip.');
+      setNotice(`Permanently deleted trip "${target.title}" and all associated media.`);
+      await loadAdminTrips();
+      await onTripsChanged?.(target.clientId);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to delete trip.');
+    } finally {
+      setTripBusyClientId(null);
     }
   };
 
@@ -405,7 +533,6 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
               {users.map((u) => {
                 const isSelf = u.id === currentUser.id;
                 const isResetting = resetUserId === u.id;
-                const isConfirmingDelete = confirmDeleteId === u.id;
 
                 return (
                   <div key={u.id} className="p-4 sm:p-5 space-y-3">
@@ -462,7 +589,6 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                           onClick={() => {
                             setResetUserId(isResetting ? null : u.id);
                             setResetPasswordValue('');
-                            setConfirmDeleteId(null);
                           }}
                           className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
                         >
@@ -475,7 +601,7 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                             type="button"
                             disabled={!isOnline || busyId === u.id}
                             onClick={() => {
-                              setConfirmDeleteId(isConfirmingDelete ? null : u.id);
+                              setPendingDeleteUser(u);
                               setResetUserId(null);
                             }}
                             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
@@ -516,31 +642,6 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                           Cancel
                         </button>
                       </form>
-                    )}
-
-                    {isConfirmingDelete && (
-                      <div className="pt-2 border-t border-red-100 flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <span className="text-red-800 font-medium">
-                          Permanently delete {u.email} and all their trips, photos, and PDFs?
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={busyId === u.id}
-                            onClick={() => handleDeleteUser(u)}
-                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-700 min-h-[36px]"
-                          >
-                            Confirm Delete
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDeleteId(null)}
-                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 min-h-[36px]"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
                     )}
                   </div>
                 );
@@ -712,6 +813,189 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
           </div>
         </form>
       </section>
+
+      {/* Active & Archived Trips Management */}
+      <section className="rounded-2xl border border-slate-200 bg-white overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+              <Archive className="w-4 h-4 text-teal-700" />
+              Trip Management (Active &amp; Archived)
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
+              {activeTripCount} active · {archivedTripCount} archived · Restore archived trips or
+              permanently delete trips and all media.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-lg self-start sm:self-auto">
+            {(
+              [
+                ['all', `All (${adminTrips.length})`],
+                ['active', `Active (${activeTripCount})`],
+                ['archived', `Archived (${archivedTripCount})`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTripFilter(key)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  tripFilter === key
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {tripsLoading ? (
+          <div className="p-8 text-center text-sm text-slate-500">Loading trips...</div>
+        ) : filteredTrips.length === 0 ? (
+          <div className="p-8 text-center text-sm text-slate-500">
+            No trips in this view.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {filteredTrips.map((tr) => {
+              const isArchived = Boolean(tr.archivedAt);
+              const busy = tripBusyClientId === tr.clientId;
+              return (
+                <div
+                  key={tr.clientId}
+                  className={`p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                    isArchived ? 'bg-amber-50/30' : ''
+                  }`}
+                >
+                  <div className="min-w-0 space-y-1">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 tabular-nums flex-wrap">
+                      <span
+                        className={`font-semibold ${
+                          isArchived ? 'text-amber-700' : 'text-teal-800'
+                        }`}
+                      >
+                        {isArchived ? 'Archived' : 'Active'}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="inline-flex items-center gap-1">
+                        <Calendar className="w-3 h-3 text-slate-400" />
+                        {tr.startDate} – {tr.endDate}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>Owner: {tr.ownerName || tr.ownerEmail}</span>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-900 truncate">{tr.title}</p>
+                    <p className="text-xs text-slate-500 tabular-nums flex items-center gap-2 flex-wrap">
+                      {tr.destination && (
+                        <span className="inline-flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-slate-400" />
+                          {tr.destination}
+                        </span>
+                      )}
+                      <span>
+                        {tr.eventCount} stops · {tr.bookingCount} stays · {tr.expenseCount} expenses
+                      </span>
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    {isArchived ? (
+                      <button
+                        type="button"
+                        disabled={!isOnline || busy}
+                        onClick={() => handleToggleArchiveTrip(tr, false)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-800 hover:bg-teal-100 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+                      >
+                        <ArchiveRestore className="w-3.5 h-3.5" />
+                        Restore Active
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!isOnline || busy}
+                        onClick={() => setPendingTripAction({ trip: tr, action: 'archive' })}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                        Archive
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      disabled={!isOnline || busy}
+                      onClick={() => setPendingTripAction({ trip: tr, action: 'delete' })}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete Forever
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* Confirm User Delete */}
+      <ConfirmDialog
+        open={Boolean(pendingDeleteUser)}
+        title="Delete User Account?"
+        message={
+          pendingDeleteUser
+            ? `Permanently delete ${pendingDeleteUser.email} and all of their trips, stays, photos, and PDFs? This cannot be undone.`
+            : ''
+        }
+        confirmLabel="Delete User"
+        busy={busyId !== null}
+        onCancel={() => {
+          if (busyId === null) setPendingDeleteUser(null);
+        }}
+        onConfirm={() => {
+          if (pendingDeleteUser) {
+            return handleDeleteUser(pendingDeleteUser);
+          }
+        }}
+      />
+
+      {/* Confirm Trip Archive / Permanent Delete */}
+      <ConfirmDialog
+        open={Boolean(pendingTripAction)}
+        title={
+          pendingTripAction?.action === 'archive'
+            ? 'Archive Trip?'
+            : 'Permanently Delete Trip?'
+        }
+        message={
+          pendingTripAction?.action === 'archive'
+            ? `Archive "${pendingTripAction.trip.title}"? It will be hidden from trip dropdowns until restored here in Admin.`
+            : pendingTripAction
+            ? `Permanently delete "${pendingTripAction.trip.title}" along with ${pendingTripAction.trip.eventCount} stops, ${pendingTripAction.trip.bookingCount} stays, ${pendingTripAction.trip.expenseCount} expenses, and all photos and PDFs? This cannot be undone.`
+            : ''
+        }
+        confirmLabel={
+          pendingTripAction?.action === 'archive' ? 'Archive Trip' : 'Delete Forever'
+        }
+        tone={pendingTripAction?.action === 'archive' ? 'amber' : 'danger'}
+        busy={tripBusyClientId !== null}
+        onCancel={() => {
+          if (tripBusyClientId === null) setPendingTripAction(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingTripAction) return;
+          const target = pendingTripAction;
+          if (target.action === 'archive') {
+            await handleToggleArchiveTrip(target.trip, true);
+          } else {
+            await handlePermanentDeleteTrip(target.trip);
+          }
+          setPendingTripAction(null);
+        }}
+      />
     </div>
   );
 };

@@ -8,6 +8,7 @@ import {
   FileText,
   Image as ImageIcon,
   MapPin,
+  Navigation,
   Plus,
 } from 'lucide-react';
 import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
@@ -278,6 +279,45 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
         onEditTrip={onEditTrip}
       />
 
+      {(trip.startLocationName || trip.endLocationName) && (
+        <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-slate-700">
+            {trip.startLocationName && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="font-semibold text-emerald-700 uppercase text-[10px]">Start</span>
+                <span className="font-medium text-slate-900">{trip.startLocationName}</span>
+                {trip.startLatitude != null && trip.startLongitude != null && (
+                  <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                    ({trip.startLatitude.toFixed(3)}, {trip.startLongitude.toFixed(3)})
+                  </span>
+                )}
+              </span>
+            )}
+            {trip.endLocationName && (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="font-semibold text-red-700 uppercase text-[10px]">End</span>
+                <span className="font-medium text-slate-900">{trip.endLocationName}</span>
+                {trip.endLatitude != null && trip.endLongitude != null && (
+                  <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                    ({trip.endLatitude.toFixed(3)}, {trip.endLongitude.toFixed(3)})
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+          {canEdit && onEditTrip && (
+            <button
+              type="button"
+              onClick={onEditTrip}
+              className="text-xs font-medium text-teal-700 hover:underline inline-flex items-center gap-1"
+            >
+              <Navigation className="w-3 h-3" />
+              Edit route
+            </button>
+          )}
+        </div>
+      )}
+
       {sortedBookings.length > 0 && (
         <section className="space-y-2.5">
           <div className="flex items-center justify-between border-b border-slate-200 pb-2">
@@ -518,6 +558,10 @@ export const AgendaView: React.FC<AgendaViewProps> = ({
                           <h4 className="text-base font-semibold text-slate-900 truncate">
                             {ev.location}
                           </h4>
+
+                          {ev.address && (
+                            <p className="text-xs text-slate-500 truncate">{ev.address}</p>
+                          )}
 
                           {(ev.journalEntry.trim() || ev.details.trim()) && (
                             <div

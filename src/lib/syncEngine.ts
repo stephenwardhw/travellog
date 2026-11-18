@@ -4,8 +4,11 @@ import type {
   BookingRecord,
   CalendarThemeSettings,
   EventRecord,
+  ExpenseCategory,
+  ExpenseRecord,
   PackingCategory,
   PackingItemRecord,
+  PaymentMethod,
   PdfRecord,
   PhotoRecord,
   TripRecord,
@@ -158,6 +161,30 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
             continue;
           await offlineDb.removeQueueItem(item.id);
           pushedCount++;
+        } else if (item.type === 'expense_upsert') {
+          const expense = await offlineDb.getExpenseRaw(item.clientId);
+          if (!expense) {
+            await offlineDb.removeQueueItem(item.id);
+            continue;
+          }
+          const res = await fetch('/api/expenses/upsert', {
+            method: 'POST',
+            headers: { ...authHeaders, 'Content-Type': 'application/json' },
+            body: JSON.stringify(expense),
+          });
+          if (!(await checkResponse(res, item.id, 'expense'))) continue;
+          await offlineDb.putExpense({ ...expense, syncStatus: 'synced' });
+          await offlineDb.removeQueueItem(item.id);
+          pushedCount++;
+        } else if (item.type === 'expense_delete') {
+          const res = await fetch(`/api/expenses/${encodeURIComponent(item.clientId)}`, {
+            method: 'DELETE',
+            headers: authHeaders,
+          });
+          if (res.status !== 404 && !(await checkResponse(res, item.id, 'expense deletion')))
+            continue;
+          await offlineDb.removeQueueItem(item.id);
+          pushedCount++;
         } else if (item.type === 'photo_upload') {
           const photo = await offlineDb.getPhotoRaw(item.clientId);
           if (!photo || !photo.blob || photo.deletedAt) {
@@ -257,6 +284,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
         events: EventRecord[];
         bookings?: BookingRecord[];
         packingItems?: PackingItemRecord[];
+        expenses?: ExpenseRecord[];
         photos: PhotoRecord[];
         pdfs: PdfRecord[];
         calendarSettings?: CalendarThemeSettings;
@@ -264,6 +292,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
 
       const remoteBookings = Array.isArray(payload.bookings) ? payload.bookings : [];
       const remotePackingItems = Array.isArray(payload.packingItems) ? payload.packingItems : [];
+      const remoteExpenses = Array.isArray(payload.expenses) ? payload.expenses : [];
 
       if (payload.calendarSettings?.eventDayBg && payload.calendarSettings?.tripDayBg) {
         await offlineDb.setMeta('calendarSettings', payload.calendarSettings);
@@ -276,6 +305,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
       const remoteEventIds = new Set(payload.events.map((e) => e.clientId));
       const remoteBookingIds = new Set(remoteBookings.map((b) => b.clientId));
       const remotePackingIds = new Set(remotePackingItems.map((i) => i.clientId));
+      const remoteExpenseIds = new Set(remoteExpenses.map((e) => e.clientId));
       const remotePhotoIds = new Set(payload.photos.map((p) => p.clientId));
       const remotePdfIds = new Set(payload.pdfs.map((p) => p.clientId));
 
@@ -288,6 +318,15 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           startDate: remoteTrip.startDate,
           endDate: remoteTrip.endDate,
           description: remoteTrip.description,
+          startLocationName: remoteTrip.startLocationName || '',
+          startLatitude: remoteTrip.startLatitude ?? null,
+          startLongitude: remoteTrip.startLongitude ?? null,
+          endLocationName: remoteTrip.endLocationName || '',
+          endLatitude: remoteTrip.endLatitude ?? null,
+          endLongitude: remoteTrip.endLongitude ?? null,
+          targetBudget: remoteTrip.targetBudget ?? null,
+          budgetCurrency: remoteTrip.budgetCurrency || 'USD',
+          archivedAt: remoteTrip.archivedAt ?? null,
           updatedAt: remoteTrip.updatedAt,
           createdAt: remoteTrip.createdAt,
           deletedAt: remoteTrip.deletedAt,
@@ -306,6 +345,7 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           eventDate: remoteEvent.eventDate,
           eventTime: remoteEvent.eventTime,
           location: remoteEvent.location,
+          address: remoteEvent.address || '',
           latitude: remoteEvent.latitude,
           longitude: remoteEvent.longitude,
           details: remoteEvent.details,
@@ -352,6 +392,25 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
           updatedAt: remoteItem.updatedAt,
           createdAt: remoteItem.createdAt,
           deletedAt: remoteItem.deletedAt ?? null,
+          syncStatus: 'synced',
+        });
+      }
+
+      for (const remoteExpense of remoteExpenses) {
+        if (pendingIds.has(remoteExpense.clientId)) continue;
+        await offlineDb.putExpense({
+          clientId: remoteExpense.clientId,
+          tripClientId: remoteExpense.tripClientId,
+          title: remoteExpense.title,
+          amount: Number(remoteExpense.amount) || 0,
+          currency: remoteExpense.currency || 'USD',
+          expenseDate: remoteExpense.expenseDate,
+          category: (remoteExpense.category || 'Other') as ExpenseCategory,
+          paymentMethod: (remoteExpense.paymentMethod || 'Credit Card') as PaymentMethod,
+          notes: remoteExpense.notes || '',
+          updatedAt: remoteExpense.updatedAt,
+          createdAt: remoteExpense.createdAt,
+          deletedAt: remoteExpense.deletedAt ?? null,
           syncStatus: 'synced',
         });
       }
@@ -464,16 +523,24 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
         });
       }
 
-      // Remove local synced items that are no longer accessible (e.g., revoked shares)
-      const [localTrips, localEvents, localBookings, localPackingItems, localPhotos, localPdfs] =
-        await Promise.all([
-          offlineDb.getAllTripsRaw(),
-          offlineDb.getAllEventsRaw(),
-          offlineDb.getAllBookingsRaw(),
-          offlineDb.getAllPackingItemsRaw(),
-          offlineDb.getAllPhotosRaw(),
-          offlineDb.getAllPdfsRaw(),
-        ]);
+      // Remove local synced items that are no longer accessible (e.g., revoked shares or admin permanent deletes)
+      const [
+        localTrips,
+        localEvents,
+        localBookings,
+        localPackingItems,
+        localExpenses,
+        localPhotos,
+        localPdfs,
+      ] = await Promise.all([
+        offlineDb.getAllTripsRaw(),
+        offlineDb.getAllEventsRaw(),
+        offlineDb.getAllBookingsRaw(),
+        offlineDb.getAllPackingItemsRaw(),
+        offlineDb.getAllExpensesRaw(),
+        offlineDb.getAllPhotosRaw(),
+        offlineDb.getAllPdfsRaw(),
+      ]);
 
       for (const t of localTrips) {
         if (!pendingIds.has(t.clientId) && !remoteTripIds.has(t.clientId)) {
@@ -493,6 +560,11 @@ export async function runFullSync(token: string, wifiOnlySync: boolean): Promise
       for (const item of localPackingItems) {
         if (!pendingIds.has(item.clientId) && !remotePackingIds.has(item.clientId)) {
           await offlineDb.deletePackingItem(item.clientId);
+        }
+      }
+      for (const exp of localExpenses) {
+        if (!pendingIds.has(exp.clientId) && !remoteExpenseIds.has(exp.clientId)) {
+          await offlineDb.deleteExpense(exp.clientId);
         }
       }
       for (const ph of localPhotos) {

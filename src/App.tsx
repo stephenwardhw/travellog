@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Archive,
   BedDouble,
   Calendar as CalendarIcon,
   ChevronDown,
@@ -14,8 +15,8 @@ import {
   RefreshCw,
   Search as SearchIcon,
   Share2,
-  Trash2,
   Users,
+  Wallet,
   Wifi,
   WifiOff,
 } from 'lucide-react';
@@ -32,8 +33,11 @@ import {
   type BookingStatus,
   type CalendarThemeSettings,
   type EventRecord,
+  type ExpenseCategory,
+  type ExpenseRecord,
   type PackingCategory,
   type PackingItemRecord,
+  type PaymentMethod,
   type PdfRecord,
   type PhotoRecord,
   type TripRecord,
@@ -45,6 +49,7 @@ import { AgendaView } from './components/AgendaView';
 import { CalendarView } from './components/CalendarView';
 import { CartoMapView } from './components/CartoMapView';
 import { PackingChecklistView } from './components/PackingChecklistView';
+import { BudgetView } from './components/BudgetView';
 import { SearchView } from './components/SearchView';
 import { AdminUsersView } from './components/AdminUsersView';
 import { TripModal } from './components/TripModal';
@@ -54,6 +59,7 @@ import { CsvImportModal } from './components/CsvImportModal';
 import { EventDetailDrawer } from './components/EventDetailDrawer';
 import { BookingDetailDrawer } from './components/BookingDetailDrawer';
 import { PhotoLightbox } from './components/PhotoLightbox';
+import { ConfirmDialog } from './components/ConfirmDialog';
 
 function makeId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -71,6 +77,7 @@ export default function App() {
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [bookings, setBookings] = useState<BookingRecord[]>([]);
   const [packingItems, setPackingItems] = useState<PackingItemRecord[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [photos, setPhotos] = useState<PhotoRecord[]>([]);
   const [pdfs, setPdfs] = useState<PdfRecord[]>([]);
   const [pendingCount, setPendingCount] = useState(0);
@@ -89,6 +96,8 @@ export default function App() {
 
   const [tripModalOpen, setTripModalOpen] = useState(false);
   const [editingTrip, setEditingTrip] = useState<TripRecord | null>(null);
+  const [pendingArchiveTrip, setPendingArchiveTrip] = useState<TripRecord | null>(null);
+  const [archivingTripBusy, setArchivingTripBusy] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [csvModalOpen, setCsvModalOpen] = useState(false);
@@ -147,6 +156,7 @@ export default function App() {
       allEvents,
       allBookings,
       allPackingItems,
+      allExpenses,
       allPhotos,
       allPdfs,
       queue,
@@ -159,6 +169,7 @@ export default function App() {
       offlineDb.getAllEvents(),
       offlineDb.getAllBookings(),
       offlineDb.getAllPackingItems(),
+      offlineDb.getAllExpenses(),
       offlineDb.getAllPhotos(),
       offlineDb.getAllPdfs(),
       offlineDb.getQueue(),
@@ -169,10 +180,12 @@ export default function App() {
     ]);
 
     const sortedTrips = [...allTrips].sort((a, b) => b.startDate.localeCompare(a.startDate));
+    const nonArchivedTrips = sortedTrips.filter((t) => !t.archivedAt);
     setTrips(sortedTrips);
     setEvents(allEvents);
     setBookings(allBookings);
     setPackingItems(allPackingItems);
+    setExpenses(allExpenses);
     setPhotos(allPhotos);
     setPdfs(allPdfs);
     setPendingCount(queue.length);
@@ -189,10 +202,10 @@ export default function App() {
 
     setActiveTripClientId((prev) => {
       const candidate = prev || savedTripId;
-      if (candidate && sortedTrips.some((t) => t.clientId === candidate)) {
+      if (candidate && nonArchivedTrips.some((t) => t.clientId === candidate)) {
         return candidate;
       }
-      return sortedTrips[0]?.clientId || null;
+      return nonArchivedTrips[0]?.clientId || null;
     });
   }, []);
 
@@ -310,9 +323,26 @@ export default function App() {
     }
   }, [session, view]);
 
+  const activeTrips = useMemo(() => trips.filter((t) => !t.archivedAt), [trips]);
+
   const activeTrip = useMemo(
-    () => trips.find((t) => t.clientId === activeTripClientId) || trips[0] || null,
-    [trips, activeTripClientId]
+    () => activeTrips.find((t) => t.clientId === activeTripClientId) || activeTrips[0] || null,
+    [activeTrips, activeTripClientId]
+  );
+
+  const activeTripIds = useMemo(
+    () => new Set(activeTrips.map((t) => t.clientId)),
+    [activeTrips]
+  );
+
+  const activeSearchEvents = useMemo(
+    () => events.filter((e) => activeTripIds.has(e.tripClientId)),
+    [events, activeTripIds]
+  );
+
+  const activeSearchBookings = useMemo(
+    () => bookings.filter((b) => activeTripIds.has(b.tripClientId)),
+    [bookings, activeTripIds]
   );
 
   const activeTripRole = activeTrip?.accessRole || 'owner';
@@ -337,6 +367,11 @@ export default function App() {
     if (!activeTrip) return [];
     return bookings.filter((b) => b.tripClientId === activeTrip.clientId);
   }, [bookings, activeTrip]);
+
+  const activeTripExpenses = useMemo(() => {
+    if (!activeTrip) return [];
+    return expenses.filter((e) => e.tripClientId === activeTrip.clientId);
+  }, [expenses, activeTrip]);
 
   const photosByEvent = useMemo(() => {
     const map = new Map<string, PhotoRecord[]>();
@@ -493,6 +528,14 @@ export default function App() {
     startDate: string;
     endDate: string;
     description: string;
+    startLocationName: string;
+    startLatitude: number | null;
+    startLongitude: number | null;
+    endLocationName: string;
+    endLatitude: number | null;
+    endLongitude: number | null;
+    targetBudget: number | null;
+    budgetCurrency: string;
   }) => {
     if (editingTrip && editingTrip.accessRole === 'view') {
       setSyncNotice('This shared trip is view-only and cannot be modified.');
@@ -509,6 +552,7 @@ export default function App() {
       : {
           clientId: makeId(),
           ...data,
+          archivedAt: null,
           accessRole: 'owner',
           ownerName: session?.user.name || session?.user.email || '',
           ownerEmail: session?.user.email || '',
@@ -529,26 +573,165 @@ export default function App() {
     triggerSync();
   };
 
-  const handleDeleteTrip = async (trip: TripRecord) => {
+  const handleArchiveTrip = async (trip: TripRecord) => {
     if (trip.accessRole && trip.accessRole !== 'owner') {
-      setSyncNotice('Only the trip owner can delete a trip.');
+      setSyncNotice('Only the trip owner can archive a trip.');
       return;
     }
     const now = new Date().toISOString();
     await offlineDb.putTrip({
       ...trip,
-      deletedAt: now,
+      archivedAt: now,
       updatedAt: now,
       syncStatus: 'pending',
     });
     await offlineDb.enqueue({
-      type: 'trip_delete',
+      type: 'trip_upsert',
       clientId: trip.clientId,
+      createdAt: now,
+    });
+    setSyncNotice(`Archived trip "${trip.title}". Administrators can restore or delete it in Admin.`);
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleUpdateTripBudget = async (targetBudget: number | null, budgetCurrency: string) => {
+    if (!activeTrip || !canEditTripById(activeTrip.clientId)) return;
+    const now = new Date().toISOString();
+    const updated: TripRecord = {
+      ...activeTrip,
+      targetBudget,
+      budgetCurrency,
+      updatedAt: now,
+      syncStatus: 'pending',
+    };
+    await offlineDb.putTrip(updated);
+    await offlineDb.enqueue({
+      type: 'trip_upsert',
+      clientId: updated.clientId,
       createdAt: now,
     });
     await loadFromLocalDb();
     triggerSync();
   };
+
+  const handleSaveExpense = async (data: {
+    clientId?: string;
+    title: string;
+    amount: number;
+    currency: string;
+    expenseDate: string;
+    category: ExpenseCategory;
+    paymentMethod: PaymentMethod;
+    notes: string;
+  }) => {
+    if (!activeTrip || !canEditTripById(activeTrip.clientId)) return;
+    const now = new Date().toISOString();
+    const existing = data.clientId ? await offlineDb.getExpenseRaw(data.clientId) : undefined;
+    const record: ExpenseRecord = {
+      clientId: existing?.clientId || data.clientId || makeId(),
+      tripClientId: existing?.tripClientId || activeTrip.clientId,
+      title: data.title,
+      amount: data.amount,
+      currency: data.currency,
+      expenseDate: data.expenseDate,
+      category: data.category,
+      paymentMethod: data.paymentMethod,
+      notes: data.notes,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      deletedAt: null,
+      syncStatus: 'pending',
+    };
+    await offlineDb.putExpense(record);
+    await offlineDb.enqueue({
+      type: 'expense_upsert',
+      clientId: record.clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleDeleteExpense = async (clientId: string) => {
+    const existing = await offlineDb.getExpenseRaw(clientId);
+    if (!existing) return;
+    if (!canEditTripById(existing.tripClientId)) return;
+    const now = new Date().toISOString();
+    await offlineDb.putExpense({
+      ...existing,
+      deletedAt: now,
+      updatedAt: now,
+      syncStatus: 'pending',
+    });
+    await offlineDb.enqueue({
+      type: 'expense_delete',
+      clientId,
+      createdAt: now,
+    });
+    await loadFromLocalDb();
+    triggerSync();
+  };
+
+  const handleAdminTripsChanged = useCallback(
+    async (deletedClientId?: string) => {
+      if (deletedClientId) {
+        const [allEvents, allBookings, allPacking, allExpenses, allPhotos, allPdfs] =
+          await Promise.all([
+            offlineDb.getAllEventsRaw(),
+            offlineDb.getAllBookingsRaw(),
+            offlineDb.getAllPackingItemsRaw(),
+            offlineDb.getAllExpensesRaw(),
+            offlineDb.getAllPhotosRaw(),
+            offlineDb.getAllPdfsRaw(),
+          ]);
+
+        const deletedEventIds = new Set(
+          allEvents.filter((e) => e.tripClientId === deletedClientId).map((e) => e.clientId)
+        );
+        const deletedBookingIds = new Set(
+          allBookings.filter((b) => b.tripClientId === deletedClientId).map((b) => b.clientId)
+        );
+
+        await offlineDb.deleteTrip(deletedClientId);
+        for (const evId of deletedEventIds) {
+          await offlineDb.deleteEvent(evId);
+        }
+        for (const bkId of deletedBookingIds) {
+          await offlineDb.deleteBooking(bkId);
+        }
+        for (const pk of allPacking) {
+          if (pk.tripClientId === deletedClientId) {
+            await offlineDb.deletePackingItem(pk.clientId);
+          }
+        }
+        for (const ex of allExpenses) {
+          if (ex.tripClientId === deletedClientId) {
+            await offlineDb.deleteExpense(ex.clientId);
+          }
+        }
+        for (const ph of allPhotos) {
+          if (
+            (ph.eventClientId && deletedEventIds.has(ph.eventClientId)) ||
+            (ph.bookingClientId && deletedBookingIds.has(ph.bookingClientId))
+          ) {
+            await offlineDb.deletePhoto(ph.clientId);
+          }
+        }
+        for (const pd of allPdfs) {
+          if (
+            (pd.eventClientId && deletedEventIds.has(pd.eventClientId)) ||
+            (pd.bookingClientId && deletedBookingIds.has(pd.bookingClientId))
+          ) {
+            await offlineDb.deletePdf(pd.clientId);
+          }
+        }
+      }
+      await loadFromLocalDb();
+      await triggerSync();
+    },
+    [loadFromLocalDb, triggerSync]
+  );
 
   const handleCsvImport = async (opts: {
     targetTripClientId: string | 'new';
@@ -567,6 +750,7 @@ export default function App() {
         startDate: sortedDates[0] || now.slice(0, 10),
         endDate: sortedDates[sortedDates.length - 1] || now.slice(0, 10),
         description: `Imported from CSV (${opts.rows.length} stops)`,
+        archivedAt: null,
         accessRole: 'owner',
         ownerName: session?.user.name || session?.user.email || '',
         ownerEmail: session?.user.email || '',
@@ -594,6 +778,7 @@ export default function App() {
         eventDate: row.eventDate,
         eventTime: row.eventTime,
         location: row.location,
+        address: '',
         latitude: row.latitude,
         longitude: row.longitude,
         details: row.details,
@@ -620,6 +805,7 @@ export default function App() {
     eventDate: string;
     eventTime: string;
     location: string;
+    address: string;
     latitude: number | null;
     longitude: number | null;
     details: string;
@@ -636,6 +822,7 @@ export default function App() {
         startDate: data.eventDate,
         endDate: data.eventDate,
         description: '',
+        archivedAt: null,
         accessRole: 'owner',
         ownerName: session?.user.name || session?.user.email || '',
         ownerEmail: session?.user.email || '',
@@ -665,6 +852,7 @@ export default function App() {
       eventDate: data.eventDate,
       eventTime: data.eventTime,
       location: data.location,
+      address: data.address,
       latitude: data.latitude,
       longitude: data.longitude,
       details: data.details,
@@ -1265,6 +1453,7 @@ export default function App() {
                 ['calendar', 'Calendar'],
                 ['map', 'Map'],
                 ['packing', 'Packing'],
+                ['budget', 'Budget'],
                 ['search', 'Search'],
                 ...(isAdmin ? ([['admin', 'Admin']] as const) : []),
               ] as const
@@ -1305,13 +1494,13 @@ export default function App() {
             aria-label="Active trip"
             value={activeTrip?.clientId || ''}
             onChange={(e) => selectActiveTrip(e.target.value)}
-            disabled={trips.length === 0}
+            disabled={activeTrips.length === 0}
             className="flex-1 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-semibold text-slate-900 focus:border-teal-700 focus:outline-none min-h-[40px]"
           >
-            {trips.length === 0 ? (
-              <option value="">No trips created yet</option>
+            {activeTrips.length === 0 ? (
+              <option value="">No active trips</option>
             ) : (
-              trips.map((t) => (
+              activeTrips.map((t) => (
                 <option key={t.clientId} value={t.clientId}>
                   {t.title}
                   {t.accessRole === 'view'
@@ -1461,12 +1650,27 @@ export default function App() {
                     role="menuitem"
                     onClick={() => {
                       setMobileMenuOpen(false);
-                      handleDeleteTrip(activeTrip);
+                      setPendingArchiveTrip(activeTrip);
                     }}
-                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-red-600 hover:bg-red-50"
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-amber-700 hover:bg-amber-50"
                   >
-                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                    Delete Trip
+                    <Archive className="w-3.5 h-3.5 shrink-0" />
+                    Archive Trip
+                  </button>
+                )}
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      setView('admin');
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Users className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    Admin &amp; Archived Trips
                   </button>
                 )}
 
@@ -1554,13 +1758,13 @@ export default function App() {
               aria-label="Active trip"
               value={activeTrip?.clientId || ''}
               onChange={(e) => selectActiveTrip(e.target.value)}
-              disabled={trips.length === 0}
+              disabled={activeTrips.length === 0}
               className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-900 focus:border-teal-700 focus:outline-none min-h-[40px] max-w-[240px]"
             >
-              {trips.length === 0 ? (
-                <option value="">No trips created yet</option>
+              {activeTrips.length === 0 ? (
+                <option value="">No active trips</option>
               ) : (
-                trips.map((t) => (
+                activeTrips.map((t) => (
                   <option key={t.clientId} value={t.clientId}>
                     {t.title}
                     {t.accessRole === 'view'
@@ -1613,11 +1817,12 @@ export default function App() {
             {activeTrip && isActiveTripOwner && (
               <button
                 type="button"
-                onClick={() => handleDeleteTrip(activeTrip)}
-                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500 hover:text-red-600 hover:bg-red-50 min-h-[40px] min-w-[40px]"
-                aria-label="Delete active trip"
+                onClick={() => setPendingArchiveTrip(activeTrip)}
+                className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-500 hover:text-amber-700 hover:bg-amber-50 min-h-[40px] min-w-[40px]"
+                aria-label="Archive active trip"
+                title="Archive active trip"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Archive className="w-3.5 h-3.5" />
               </button>
             )}
 
@@ -1800,6 +2005,14 @@ export default function App() {
             canEdit={canEditActiveTrip}
             onSelectEvent={openExistingEvent}
             onSelectBooking={openExistingBooking}
+            onEditTrip={
+              activeTrip
+                ? () => {
+                    setEditingTrip(activeTrip);
+                    setTripModalOpen(true);
+                  }
+                : undefined
+            }
             onAssignCoordinates={handleAssignCoordinates}
             onAssignBookingCoordinates={handleAssignBookingCoordinates}
             onAddStopAtCoords={(lat, lng) => openNewStop(activeTrip?.startDate, { lat, lng })}
@@ -1823,11 +2036,22 @@ export default function App() {
           />
         )}
 
+        {view === 'budget' && (
+          <BudgetView
+            trip={activeTrip}
+            expenses={activeTripExpenses}
+            canEdit={canEditActiveTrip}
+            onUpdateTripBudget={handleUpdateTripBudget}
+            onSaveExpense={handleSaveExpense}
+            onDeleteExpense={handleDeleteExpense}
+          />
+        )}
+
         {view === 'search' && (
           <SearchView
-            trips={trips}
-            events={events}
-            bookings={bookings}
+            trips={activeTrips}
+            events={activeSearchEvents}
+            bookings={activeSearchBookings}
             pdfs={pdfs}
             onSelectEvent={openExistingEvent}
             onSelectBooking={openExistingBooking}
@@ -1843,6 +2067,7 @@ export default function App() {
               setCalendarSettings(next);
               await offlineDb.setMeta('calendarSettings', next);
             }}
+            onTripsChanged={handleAdminTripsChanged}
             onUnauthorized={handleSignOut}
           />
         )}
@@ -1851,9 +2076,7 @@ export default function App() {
       {/* Mobile Fixed Bottom Tab Bar */}
       <nav
         aria-label="Primary mobile navigation"
-        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 backdrop-blur-md border-t border-slate-200 grid items-center ${
-          isAdmin ? 'grid-cols-6' : 'grid-cols-5'
-        }`}
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-14 bg-white/95 backdrop-blur-md border-t border-slate-200 grid grid-cols-6 items-center"
       >
         {(
           [
@@ -1861,8 +2084,8 @@ export default function App() {
             ['calendar', 'Calendar', CalendarIcon],
             ['map', 'Map', MapIcon],
             ['packing', 'Packing', Luggage],
+            ['budget', 'Budget', Wallet],
             ['search', 'Search', SearchIcon],
-            ...(isAdmin ? ([['admin', 'Admin', Users]] as const) : []),
           ] as const
         ).map(([key, label, Icon]) => {
           const active = view === key;
@@ -1887,6 +2110,7 @@ export default function App() {
       <TripModal
         open={tripModalOpen}
         initialTrip={editingTrip}
+        authToken={session.token}
         onClose={() => setTripModalOpen(false)}
         onSave={handleSaveTrip}
       />
@@ -1904,6 +2128,7 @@ export default function App() {
         trip={activeTrip}
         events={activeTripEvents}
         bookings={activeTripBookings}
+        expenses={activeTripExpenses}
         photosByEvent={photosByEvent}
         photosByBooking={photosByBooking}
         pdfsByEvent={pdfsByEvent}
@@ -1917,7 +2142,7 @@ export default function App() {
 
       <CsvImportModal
         open={csvModalOpen}
-        trips={trips}
+        trips={activeTrips}
         activeTripClientId={activeTrip?.clientId || null}
         onClose={() => setCsvModalOpen(false)}
         onImport={handleCsvImport}
@@ -1977,6 +2202,32 @@ export default function App() {
           onCacheFullPhoto={handleCacheFullPhoto}
         />
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingArchiveTrip)}
+        title="Archive Trip?"
+        message={
+          pendingArchiveTrip
+            ? `Archive "${pendingArchiveTrip.title}"? It will be hidden from the trip dropdown until restored by an administrator.`
+            : ''
+        }
+        confirmLabel="Archive Trip"
+        tone="amber"
+        busy={archivingTripBusy}
+        onCancel={() => {
+          if (!archivingTripBusy) setPendingArchiveTrip(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingArchiveTrip) return;
+          setArchivingTripBusy(true);
+          try {
+            await handleArchiveTrip(pendingArchiveTrip);
+            setPendingArchiveTrip(null);
+          } finally {
+            setArchivingTripBusy(false);
+          }
+        }}
+      />
     </div>
   );
 }

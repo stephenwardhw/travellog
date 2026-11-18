@@ -1,6 +1,7 @@
 import type {
   BookingRecord,
   EventRecord,
+  ExpenseRecord,
   PackingItemRecord,
   PdfRecord,
   PhotoRecord,
@@ -9,7 +10,7 @@ import type {
 } from '../types/journal';
 
 const DB_NAME = 'fieldlog_journal_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 
@@ -33,6 +34,10 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('packingItems')) {
         const packingStore = db.createObjectStore('packingItems', { keyPath: 'clientId' });
         packingStore.createIndex('byTrip', 'tripClientId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('expenses')) {
+        const expensesStore = db.createObjectStore('expenses', { keyPath: 'clientId' });
+        expensesStore.createIndex('byTrip', 'tripClientId', { unique: false });
       }
       if (!db.objectStoreNames.contains('photos')) {
         const photosStore = db.createObjectStore('photos', { keyPath: 'clientId' });
@@ -203,6 +208,39 @@ export const offlineDb = {
     await txDone(tx);
   },
 
+  async getAllExpenses(): Promise<ExpenseRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('expenses', 'readonly');
+    const items = await reqToPromise(tx.objectStore('expenses').getAll());
+    return (items as ExpenseRecord[]).filter((e) => !e.deletedAt);
+  },
+
+  async getAllExpensesRaw(): Promise<ExpenseRecord[]> {
+    const db = await openDb();
+    const tx = db.transaction('expenses', 'readonly');
+    return reqToPromise(tx.objectStore('expenses').getAll());
+  },
+
+  async getExpenseRaw(clientId: string): Promise<ExpenseRecord | undefined> {
+    const db = await openDb();
+    const tx = db.transaction('expenses', 'readonly');
+    return reqToPromise(tx.objectStore('expenses').get(clientId));
+  },
+
+  async putExpense(expense: ExpenseRecord): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('expenses', 'readwrite');
+    tx.objectStore('expenses').put(expense);
+    await txDone(tx);
+  },
+
+  async deleteExpense(clientId: string): Promise<void> {
+    const db = await openDb();
+    const tx = db.transaction('expenses', 'readwrite');
+    tx.objectStore('expenses').delete(clientId);
+    await txDone(tx);
+  },
+
   async getAllPhotos(): Promise<PhotoRecord[]> {
     const db = await openDb();
     const tx = db.transaction('photos', 'readonly');
@@ -306,13 +344,24 @@ export const offlineDb = {
   async clearAllUserData(): Promise<void> {
     const db = await openDb();
     const tx = db.transaction(
-      ['trips', 'events', 'bookings', 'packingItems', 'photos', 'pdfs', 'syncQueue', 'meta'],
+      [
+        'trips',
+        'events',
+        'bookings',
+        'packingItems',
+        'expenses',
+        'photos',
+        'pdfs',
+        'syncQueue',
+        'meta',
+      ],
       'readwrite'
     );
     tx.objectStore('trips').clear();
     tx.objectStore('events').clear();
     tx.objectStore('bookings').clear();
     tx.objectStore('packingItems').clear();
+    tx.objectStore('expenses').clear();
     tx.objectStore('photos').clear();
     tx.objectStore('pdfs').clear();
     tx.objectStore('syncQueue').clear();

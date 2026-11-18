@@ -9,12 +9,15 @@ import {
   Image as ImageIcon,
   MapPin,
   Printer,
+  Wallet,
   X,
 } from 'lucide-react';
 import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import { formatMoney } from './BudgetView';
 import type {
   BookingRecord,
   EventRecord,
+  ExpenseRecord,
   PdfRecord,
   PhotoRecord,
   TripRecord,
@@ -25,6 +28,7 @@ interface TripReportModalProps {
   trip: TripRecord | null;
   events: EventRecord[];
   bookings?: BookingRecord[];
+  expenses?: ExpenseRecord[];
   photosByEvent: Map<string, PhotoRecord[]>;
   photosByBooking?: Map<string, PhotoRecord[]>;
   pdfsByEvent: Map<string, PdfRecord[]>;
@@ -148,17 +152,17 @@ const ReportPhotoFigure: React.FC<{
       <button
         type="button"
         onClick={onClick}
-        className="w-full block aspect-[4/3] bg-slate-100 overflow-hidden cursor-zoom-in focus:outline-none print:cursor-default"
+        className="w-full flex items-center justify-center bg-slate-50 overflow-hidden cursor-zoom-in focus:outline-none print:cursor-default p-1.5"
         aria-label={`View full photo ${photo.filename}`}
       >
         {objectUrl ? (
           <img
             src={objectUrl}
             alt={photo.caption || photo.filename}
-            className="w-full h-full object-cover"
+            className="w-full h-auto max-h-96 object-contain mx-auto"
           />
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-slate-400 text-xs">
+          <div className="w-full min-h-[140px] flex flex-col items-center justify-center gap-1.5 text-slate-400 text-xs">
             <ImageIcon className="w-5 h-5" />
             <span>{loading ? 'Loading...' : 'Offline preview'}</span>
           </div>
@@ -176,6 +180,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   trip,
   events,
   bookings = [],
+  expenses = [],
   photosByEvent,
   photosByBooking = new Map<string, PhotoRecord[]>(),
   pdfsByEvent,
@@ -185,6 +190,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   onClose,
 }) => {
   const [includeBookings, setIncludeBookings] = useState(true);
+  const [includeBudget, setIncludeBudget] = useState(true);
   const [includeDetails, setIncludeDetails] = useState(true);
   const [includeJournal, setIncludeJournal] = useState(true);
   const [includeCoords, setIncludeCoords] = useState(true);
@@ -205,6 +211,17 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   const sortedBookings = useMemo(
     () => [...bookings].sort((a, b) => a.checkInDate.localeCompare(b.checkInDate)),
     [bookings]
+  );
+
+  const sortedExpenses = useMemo(
+    () => [...expenses].sort((a, b) => a.expenseDate.localeCompare(b.expenseDate)),
+    [expenses]
+  );
+
+  const budgetCurrency = trip?.budgetCurrency || 'USD';
+  const totalSpent = useMemo(
+    () => sortedExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0),
+    [sortedExpenses]
   );
 
   const groupedByDate = useMemo(() => {
@@ -421,6 +438,7 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                     }
                   </div>
                   <h3>${escapeHtml(ev.location)}</h3>
+                  ${ev.address ? `<p class="details">${escapeHtml(ev.address)}</p>` : ''}
                   ${
                     includeDetails && sanitizedDetailsHtml
                       ? `<div class="details-html">${sanitizedDetailsHtml}</div>`
@@ -604,8 +622,10 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
     .photo-card img {
       display: block;
       width: 100%;
-      height: 180px;
-      object-fit: cover;
+      height: auto;
+      max-height: 420px;
+      object-fit: contain;
+      background: #f8fafc;
     }
     .photo-card figcaption {
       padding: 6px 10px;
@@ -658,6 +678,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       ${trip.destination ? `${escapeHtml(trip.destination)} · ` : ''}${escapeHtml(
         trip.startDate
       )} – ${escapeHtml(trip.endDate)}${
+        trip.startLocationName ? ` · Start: ${escapeHtml(trip.startLocationName)}` : ''
+      }${trip.endLocationName ? ` · End: ${escapeHtml(trip.endLocationName)}` : ''}${
         trip.accessRole && trip.accessRole !== 'owner'
           ? ` · Shared by ${escapeHtml(trip.ownerName || trip.ownerEmail || 'Owner')}`
           : ''
@@ -671,6 +693,40 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
       <div><div class="stat-label">Photos</div><div class="stat-value">${totals.photos}</div></div>
       <div><div class="stat-label">Documents</div><div class="stat-value">${totals.pdfs}</div></div>
     </div>
+    ${
+      includeBudget && (trip.targetBudget != null || sortedExpenses.length > 0)
+        ? `<section class="bookings-section">
+            <div class="day-header">
+              <h2>Budget &amp; Expenses</h2>
+              <span class="day-sub">${
+                trip.targetBudget != null
+                  ? `Budget ${escapeHtml(formatMoney(trip.targetBudget, budgetCurrency))} · `
+                  : ''
+              }Spent ${escapeHtml(formatMoney(totalSpent, budgetCurrency))}</span>
+            </div>
+            ${
+              sortedExpenses.length > 0
+                ? sortedExpenses
+                    .map(
+                      (ex) => `
+                  <article class="stop">
+                    <div class="stop-meta">
+                      <span>${escapeHtml(ex.expenseDate)} · ${escapeHtml(ex.category)} · ${escapeHtml(
+                        ex.paymentMethod
+                      )}</span>
+                      <strong>${escapeHtml(formatMoney(ex.amount, ex.currency || budgetCurrency))}</strong>
+                    </div>
+                    <h3>${escapeHtml(ex.title)}</h3>
+                    ${ex.notes ? `<p class="details">${escapeHtml(ex.notes)}</p>` : ''}
+                  </article>
+                `
+                    )
+                    .join('')
+                : '<p style="color:#64748b;font-size:13px;">No expenses logged yet.</p>'
+            }
+          </section>`
+        : ''
+    }
     ${bookingsSectionHtml}
     ${
       groupedByDate.length === 0
@@ -771,6 +827,15 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
             <label className="inline-flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
+                checked={includeBudget}
+                onChange={(e) => setIncludeBudget(e.target.checked)}
+                className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+              />
+              Budget &amp; Expenses
+            </label>
+            <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
                 checked={includeDetails}
                 onChange={(e) => setIncludeDetails(e.target.checked)}
                 className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
@@ -856,6 +921,18 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                   <Calendar className="w-3.5 h-3.5 text-slate-400" />
                   {trip.startDate} – {trip.endDate}
                 </span>
+                {trip.startLocationName && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Start: {trip.startLocationName}</span>
+                  </>
+                )}
+                {trip.endLocationName && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>End: {trip.endLocationName}</span>
+                  </>
+                )}
                 {trip.accessRole && trip.accessRole !== 'owner' && (
                   <>
                     <span aria-hidden="true">·</span>
@@ -894,6 +971,48 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
               </div>
             </div>
           </header>
+
+          {/* Budget & Expenses */}
+          {includeBudget && (trip.targetBudget != null || sortedExpenses.length > 0) && (
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b-2 border-teal-700 pb-2">
+                <h2 className="font-display text-xl font-semibold text-slate-900 flex items-center gap-2">
+                  <Wallet className="w-5 h-5 text-teal-700" />
+                  Budget &amp; Expenses
+                </h2>
+                <span className="text-xs font-medium text-slate-600 tabular-nums">
+                  {trip.targetBudget != null
+                    ? `Target ${formatMoney(trip.targetBudget, budgetCurrency)} · `
+                    : ''}
+                  Spent {formatMoney(totalSpent, budgetCurrency)}
+                </span>
+              </div>
+
+              {sortedExpenses.length === 0 ? (
+                <p className="text-xs text-slate-500">No expenses logged yet.</p>
+              ) : (
+                <div className="rounded-xl border border-slate-200 bg-white divide-y divide-slate-100">
+                  {sortedExpenses.map((ex) => (
+                    <div
+                      key={ex.clientId}
+                      className="px-4 py-3 flex items-start justify-between gap-3 break-inside-avoid"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-[11px] text-slate-500 tabular-nums">
+                          {ex.expenseDate} · {ex.category} · {ex.paymentMethod}
+                        </p>
+                        <p className="text-sm font-semibold text-slate-900">{ex.title}</p>
+                        {ex.notes && <p className="text-xs text-slate-600 mt-0.5">{ex.notes}</p>}
+                      </div>
+                      <span className="text-sm font-semibold text-slate-900 tabular-nums shrink-0">
+                        {formatMoney(ex.amount, ex.currency || budgetCurrency)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Accommodations & Multiday Bookings */}
           {includeBookings && sortedBookings.length > 0 && (
@@ -1046,6 +1165,10 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                             <h3 className="text-base sm:text-lg font-semibold text-slate-900">
                               {ev.location}
                             </h3>
+
+                            {ev.address && (
+                              <p className="text-xs text-slate-500">{ev.address}</p>
+                            )}
 
                             {includeDetails && sanitizedDetailsHtml && (
                               <div

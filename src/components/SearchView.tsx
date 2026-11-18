@@ -88,12 +88,15 @@ export const SearchView: React.FC<SearchViewProps> = ({
         const trip = tripMap.get(ev.tripClientId);
         const plainDetails = htmlToPlainText(ev.details);
         const plainJournal = htmlToPlainText(ev.journalEntry);
-        if (ev.location.toLowerCase().includes(q)) {
+        const addressText = ev.address || '';
+        if (ev.location.toLowerCase().includes(q) || addressText.toLowerCase().includes(q)) {
           results.push({
             event: ev,
             trip,
             source: 'location',
-            snippet: plainDetails || plainJournal || ev.location,
+            snippet:
+              [addressText, plainDetails || plainJournal].filter(Boolean).join(' · ') ||
+              ev.location,
           });
         } else if (plainJournal.toLowerCase().includes(q)) {
           results.push({

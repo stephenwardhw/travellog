@@ -1,6 +1,6 @@
 import { and, asc, eq, ne } from 'drizzle-orm';
 import { db } from './index.ts';
-import { bookings, events, packingItems, trips, tripShares, users } from './schema.ts';
+import { bookings, events, expenses, packingItems, trips, tripShares, users } from './schema.ts';
 
 export type TripAccessRole = 'owner' | 'edit' | 'view';
 
@@ -13,6 +13,15 @@ export interface AccessibleTripRow {
   startDate: string;
   endDate: string;
   description: string;
+  startLocationName: string;
+  startLatitude: number | null;
+  startLongitude: number | null;
+  endLocationName: string;
+  endLatitude: number | null;
+  endLongitude: number | null;
+  targetBudget: number | null;
+  budgetCurrency: string;
+  archivedAt: Date | null;
   updatedAt: Date;
   createdAt: Date;
   deletedAt: Date | null;
@@ -133,6 +142,33 @@ export async function getPackingItemAccessByClientId(
   const role = await getTripAccessForTripRow(trip, userId);
   if (!role) return null;
   return { item, trip, role };
+}
+
+export async function getExpenseAccessByClientId(
+  expenseClientId: string,
+  userId: number
+): Promise<{
+  expense: typeof expenses.$inferSelect;
+  trip: typeof trips.$inferSelect;
+  role: TripAccessRole;
+} | null> {
+  const [expense] = await db
+    .select()
+    .from(expenses)
+    .where(eq(expenses.clientId, expenseClientId))
+    .limit(1);
+
+  if (!expense) return null;
+  const [trip] = await db
+    .select()
+    .from(trips)
+    .where(eq(trips.id, expense.tripId))
+    .limit(1);
+
+  if (!trip) return null;
+  const role = await getTripAccessForTripRow(trip, userId);
+  if (!role) return null;
+  return { expense, trip, role };
 }
 
 export async function getAccessibleTripsForUser(userId: number): Promise<AccessibleTripRow[]> {

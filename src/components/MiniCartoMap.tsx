@@ -8,7 +8,7 @@ interface MiniCartoMapProps {
   latitude: number | null;
   longitude: number | null;
   title?: string;
-  pinVariant?: 'stay' | 'event';
+  pinVariant?: 'stay' | 'event' | 'start' | 'end';
   status?: BookingStatus;
   interactive?: boolean;
   allowEmptyMap?: boolean;
@@ -150,7 +150,11 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     const safeTitle = (title || 'Location').replace(/"/g, '&quot;');
 
     const iconHtml =
-      pinVariant === 'event'
+      pinVariant === 'start'
+        ? `<div style="padding:0 7px;height:28px;border-radius:8px;background:#047857;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;letter-spacing:0.04em;" title="${safeTitle}">START</div>`
+        : pinVariant === 'end'
+        ? `<div style="padding:0 7px;height:28px;border-radius:8px;background:#B91C1C;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;letter-spacing:0.04em;" title="${safeTitle}">END</div>`
+        : pinVariant === 'event'
         ? `<div style="width:30px;height:30px;border-radius:9999px;background:#0F766E;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;" title="${safeTitle}"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>`
         : `<div style="width:30px;height:30px;border-radius:8px;background:${
             status === 'confirmed' ? '#4338CA' : '#D97706'
@@ -159,8 +163,8 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
     const icon = L.divIcon({
       className: '',
       html: iconHtml,
-      iconSize: [30, 30],
-      iconAnchor: [15, 15],
+      iconSize: pinVariant === 'start' || pinVariant === 'end' ? [52, 28] : [30, 30],
+      iconAnchor: pinVariant === 'start' || pinVariant === 'end' ? [26, 14] : [15, 15],
     });
 
     if (markerRef.current) {
@@ -211,7 +215,13 @@ export const MiniCartoMap: React.FC<MiniCartoMapProps> = ({
         <div className="min-w-0 flex-1 flex items-center gap-1.5">
           <MapPin
             className={`w-3.5 h-3.5 shrink-0 ${
-              pinVariant === 'event' ? 'text-teal-700' : 'text-indigo-700'
+              pinVariant === 'start'
+                ? 'text-emerald-700'
+                : pinVariant === 'end'
+                ? 'text-red-700'
+                : pinVariant === 'event'
+                ? 'text-teal-700'
+                : 'text-indigo-700'
             }`}
           />
           <span className="truncate">

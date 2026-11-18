@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
-import { BedDouble, Crosshair, MapPin, Plus, WifiOff } from 'lucide-react';
+import { BedDouble, Crosshair, Flag, MapPin, Plus, WifiOff } from 'lucide-react';
 import { useNetworkStatus } from '../lib/network';
 import { htmlToPlainText } from '../lib/htmlSanitizer';
 import type { BookingRecord, EventRecord, PhotoRecord, TripRecord } from '../types/journal';
@@ -13,6 +13,7 @@ interface CartoMapViewProps {
   canEdit: boolean;
   onSelectEvent: (event: EventRecord) => void;
   onSelectBooking?: (booking: BookingRecord) => void;
+  onEditTrip?: () => void;
   onAssignCoordinates: (event: EventRecord, lat: number, lng: number) => Promise<void>;
   onAssignBookingCoordinates?: (booking: BookingRecord, lat: number, lng: number) => Promise<void>;
   onAddStopAtCoords: (lat: number, lng: number) => void;
@@ -28,6 +29,7 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
   canEdit,
   onSelectEvent,
   onSelectBooking,
+  onEditTrip,
   onAssignCoordinates,
   onAssignBookingCoordinates,
   onAddStopAtCoords,
@@ -64,6 +66,18 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
     () => sortedBookings.filter((b) => b.latitude !== null && b.longitude !== null),
     [sortedBookings]
   );
+
+  const hasStartCoords =
+    trip?.startLatitude !== null &&
+    trip?.startLatitude !== undefined &&
+    trip?.startLongitude !== null &&
+    trip?.startLongitude !== undefined;
+
+  const hasEndCoords =
+    trip?.endLatitude !== null &&
+    trip?.endLatitude !== undefined &&
+    trip?.endLongitude !== null &&
+    trip?.endLongitude !== undefined;
 
   const unmappedCount = useMemo(
     () =>
@@ -136,7 +150,7 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
     onAddStopAtCoords,
   ]);
 
-  // Render event stop markers, booking pins, and route polyline
+  // Render start/end anchors, event stop markers, booking pins, and route polyline
   useEffect(() => {
     const map = mapRef.current;
     const group = layerGroupRef.current;
@@ -146,6 +160,35 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
 
     const routeCoords: L.LatLngExpression[] = [];
     const allBoundsCoords: L.LatLngExpression[] = [];
+
+    if (trip && hasStartCoords) {
+      const sLat = trip.startLatitude!;
+      const sLng = trip.startLongitude!;
+      routeCoords.push([sLat, sLng]);
+      allBoundsCoords.push([sLat, sLng]);
+
+      const startIcon = L.divIcon({
+        className: '',
+        html: `<div style="padding:0 8px;height:26px;border-radius:8px;background:#047857;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;letter-spacing:0.05em;">START</div>`,
+        iconSize: [54, 26],
+        iconAnchor: [27, 13],
+        popupAnchor: [0, -13],
+      });
+
+      const startMarker = L.marker([sLat, sLng], { icon: startIcon });
+      const popupRoot = document.createElement('div');
+      popupRoot.className = 'space-y-1 min-w-[180px]';
+      const metaEl = document.createElement('div');
+      metaEl.className = 'text-[11px] font-semibold text-emerald-700';
+      metaEl.textContent = `Trip Start · ${trip.startDate}`;
+      const titleEl = document.createElement('div');
+      titleEl.className = 'text-sm font-semibold text-slate-900';
+      titleEl.textContent = trip.startLocationName || 'Starting Location';
+      popupRoot.appendChild(metaEl);
+      popupRoot.appendChild(titleEl);
+      startMarker.bindPopup(popupRoot);
+      startMarker.addTo(group);
+    }
 
     mappedEvents.forEach((ev, idx) => {
       const lat = ev.latitude!;
@@ -180,6 +223,16 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
       titleEl.className = 'text-sm font-semibold text-slate-900';
       titleEl.textContent = ev.location;
 
+      popupRoot.appendChild(metaEl);
+      popupRoot.appendChild(titleEl);
+
+      if (ev.address) {
+        const addrEl = document.createElement('div');
+        addrEl.className = 'text-[11px] text-slate-500';
+        addrEl.textContent = ev.address;
+        popupRoot.appendChild(addrEl);
+      }
+
       const descEl = document.createElement('div');
       descEl.className = 'text-xs text-slate-600 line-clamp-2';
       descEl.textContent =
@@ -192,14 +245,41 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
       btn.textContent = 'Open Journal';
       btn.onclick = () => onSelectEvent(ev);
 
-      popupRoot.appendChild(metaEl);
-      popupRoot.appendChild(titleEl);
       popupRoot.appendChild(descEl);
       popupRoot.appendChild(btn);
 
       marker.bindPopup(popupRoot);
       marker.addTo(group);
     });
+
+    if (trip && hasEndCoords) {
+      const eLat = trip.endLatitude!;
+      const eLng = trip.endLongitude!;
+      routeCoords.push([eLat, eLng]);
+      allBoundsCoords.push([eLat, eLng]);
+
+      const endIcon = L.divIcon({
+        className: '',
+        html: `<div style="padding:0 8px;height:26px;border-radius:8px;background:#B91C1C;color:#ffffff;border:2px solid #ffffff;box-shadow:0 2px 8px rgba(15,23,42,0.35);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;letter-spacing:0.05em;">END</div>`,
+        iconSize: [48, 26],
+        iconAnchor: [24, 13],
+        popupAnchor: [0, -13],
+      });
+
+      const endMarker = L.marker([eLat, eLng], { icon: endIcon });
+      const popupRoot = document.createElement('div');
+      popupRoot.className = 'space-y-1 min-w-[180px]';
+      const metaEl = document.createElement('div');
+      metaEl.className = 'text-[11px] font-semibold text-red-700';
+      metaEl.textContent = `Trip End · ${trip.endDate}`;
+      const titleEl = document.createElement('div');
+      titleEl.className = 'text-sm font-semibold text-slate-900';
+      titleEl.textContent = trip.endLocationName || 'Ending Location';
+      popupRoot.appendChild(metaEl);
+      popupRoot.appendChild(titleEl);
+      endMarker.bindPopup(popupRoot);
+      endMarker.addTo(group);
+    }
 
     if (routeCoords.length > 1) {
       L.polyline(routeCoords, {
@@ -278,7 +358,23 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
       const bounds = L.latLngBounds(allBoundsCoords);
       map.fitBounds(bounds, { padding: [48, 48], maxZoom: 13 });
     }
-  }, [mappedEvents, mappedBookings, photosByEvent, onSelectEvent, onSelectBooking]);
+  }, [
+    trip?.startLatitude,
+    trip?.startLongitude,
+    trip?.startLocationName,
+    trip?.startDate,
+    trip?.endLatitude,
+    trip?.endLongitude,
+    trip?.endLocationName,
+    trip?.endDate,
+    hasStartCoords,
+    hasEndCoords,
+    mappedEvents,
+    mappedBookings,
+    photosByEvent,
+    onSelectEvent,
+    onSelectBooking,
+  ]);
 
   return (
     <div className="space-y-4">
@@ -349,6 +445,108 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
         </div>
 
         <aside className="lg:col-span-3 rounded-2xl border border-slate-200 bg-white p-4 space-y-5 max-h-[580px] overflow-y-auto">
+          {trip && (
+            <div className="space-y-2.5 pb-4 border-b border-slate-200">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                  <Flag className="w-4 h-4 text-emerald-700" />
+                  Route Anchors
+                </h3>
+                {canEdit && onEditTrip && (
+                  <button
+                    type="button"
+                    onClick={onEditTrip}
+                    className="text-xs font-medium text-teal-700 hover:underline shrink-0"
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <div className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 space-y-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-emerald-800 uppercase tracking-wide text-[10px]">
+                      Start
+                    </span>
+                    {hasStartCoords ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          mapRef.current?.setView([trip.startLatitude!, trip.startLongitude!], 12, {
+                            animate: true,
+                          })
+                        }
+                        className="text-[11px] font-medium text-teal-700 hover:underline"
+                      >
+                        Focus
+                      </button>
+                    ) : (
+                      canEdit &&
+                      onEditTrip && (
+                        <button
+                          type="button"
+                          onClick={onEditTrip}
+                          className="text-[11px] font-medium text-amber-700 hover:underline"
+                        >
+                          Set in Edit Trip
+                        </button>
+                      )
+                    )}
+                  </div>
+                  <p className="text-xs font-medium text-slate-900 truncate">
+                    {trip.startLocationName || 'Not set'}
+                  </p>
+                  {hasStartCoords && (
+                    <p className="text-[11px] font-mono text-slate-400 tabular-nums">
+                      {trip.startLatitude!.toFixed(4)}, {trip.startLongitude!.toFixed(4)}
+                    </p>
+                  )}
+                </div>
+
+                <div className="rounded-lg border border-slate-100 bg-slate-50 px-2.5 py-2 space-y-0.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-red-700 uppercase tracking-wide text-[10px]">
+                      End
+                    </span>
+                    {hasEndCoords ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          mapRef.current?.setView([trip.endLatitude!, trip.endLongitude!], 12, {
+                            animate: true,
+                          })
+                        }
+                        className="text-[11px] font-medium text-teal-700 hover:underline"
+                      >
+                        Focus
+                      </button>
+                    ) : (
+                      canEdit &&
+                      onEditTrip && (
+                        <button
+                          type="button"
+                          onClick={onEditTrip}
+                          className="text-[11px] font-medium text-amber-700 hover:underline"
+                        >
+                          Set in Edit Trip
+                        </button>
+                      )
+                    )}
+                  </div>
+                  <p className="text-xs font-medium text-slate-900 truncate">
+                    {trip.endLocationName || 'Not set'}
+                  </p>
+                  {hasEndCoords && (
+                    <p className="text-[11px] font-mono text-slate-400 tabular-nums">
+                      {trip.endLatitude!.toFixed(4)}, {trip.endLongitude!.toFixed(4)}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {sortedBookings.length > 0 && (
             <div className="space-y-3 pb-4 border-b border-slate-200">
               <div>
@@ -471,6 +669,9 @@ export const CartoMapView: React.FC<CartoMapViewProps> = ({
                           <p className="text-sm font-medium text-slate-900 group-hover:text-teal-800 truncate">
                             {ev.location}
                           </p>
+                          {ev.address && (
+                            <p className="text-[11px] text-slate-500 truncate">{ev.address}</p>
+                          )}
                         </button>
                         <button
                           type="button"

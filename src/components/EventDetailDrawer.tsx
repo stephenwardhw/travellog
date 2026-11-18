@@ -16,6 +16,7 @@ import { extractPdfText } from '../lib/pdfExtractor';
 import { sanitizeHtml } from '../lib/htmlSanitizer';
 import { RichTextEditor } from './RichTextEditor';
 import { MiniCartoMap } from './MiniCartoMap';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { EventRecord, PdfRecord, PhotoRecord } from '../types/journal';
 
 interface GeocodeCandidate {
@@ -39,6 +40,7 @@ interface EventDetailDrawerProps {
       eventDate: string;
       eventTime: string;
       location: string;
+      address: string;
       latitude: number | null;
       longitude: number | null;
       details: string;
@@ -148,6 +150,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
 }) => {
   const today = new Date().toISOString().slice(0, 10);
   const [location, setLocation] = useState('');
+  const [address, setAddress] = useState('');
   const [eventDate, setEventDate] = useState(today);
   const [eventTime, setEventTime] = useState('');
   const [latitude, setLatitude] = useState('');
@@ -164,10 +167,18 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
   const [searchingGeo, setSearchingGeo] = useState(false);
   const [geoNotice, setGeoNotice] = useState<string | null>(null);
   const [showMapPicker, setShowMapPicker] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<
+    | { type: 'event' }
+    | { type: 'photo'; clientId: string; name: string }
+    | { type: 'pdf'; clientId: string; name: string }
+    | null
+  >(null);
+  const [deletingItem, setDeletingItem] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setLocation(event?.location || '');
+    setAddress(event?.address || '');
     setEventDate(event?.eventDate || defaultDate || today);
     setEventTime(event?.eventTime || '');
     setLatitude(
@@ -190,6 +201,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
     setGeoResults([]);
     setGeoNotice(null);
     setShowMapPicker(false);
+    setPendingDelete(null);
     setError(null);
   }, [open, event, defaultDate, defaultCoords, today]);
 
@@ -206,6 +218,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
       eventDate,
       eventTime: eventTime.trim(),
       location: location.trim(),
+      address: address.trim(),
       latitude: lat !== null && Number.isFinite(lat) ? lat : null,
       longitude: lng !== null && Number.isFinite(lng) ? lng : null,
       details: sanitizeHtml(details),
@@ -374,10 +387,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
             {event && !readOnly && (
               <button
                 type="button"
-                onClick={async () => {
-                  await onDeleteEvent(event.clientId);
-                  onClose();
-                }}
+                onClick={() => setPendingDelete({ type: 'event' })}
                 className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
                 aria-label="Delete stop"
               >
@@ -411,22 +421,9 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
 
           <div className="space-y-4">
             <div>
-              <div className="flex items-center justify-between gap-2 mb-1.5">
-                <label className="block text-xs font-medium text-slate-700">
-                  Location / Stop Name
-                </label>
-                {!readOnly && location.trim() && (
-                  <button
-                    type="button"
-                    disabled={searchingGeo}
-                    onClick={() => handleGeocodeLookup(location.trim())}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800 disabled:opacity-50"
-                  >
-                    <MapPin className="w-3.5 h-3.5" />
-                    {searchingGeo ? 'Looking up...' : 'Look up Lat/Lng'}
-                  </button>
-                )}
-              </div>
+              <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                Location / Stop Name
+              </label>
               <input
                 type="text"
                 value={location}
@@ -435,6 +432,37 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                 required
                 disabled={readOnly}
                 className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15 disabled:bg-slate-50 disabled:text-slate-700"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-1.5">
+                <label className="block text-xs font-medium text-slate-700">
+                  Address / Specific Location (optional)
+                </label>
+                {!readOnly && (address.trim() || location.trim()) && (
+                  <button
+                    type="button"
+                    disabled={searchingGeo}
+                    onClick={() => handleGeocodeLookup(address.trim() || location.trim())}
+                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 hover:text-teal-800 disabled:opacity-50"
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    {searchingGeo
+                      ? 'Looking up...'
+                      : address.trim()
+                      ? 'Look up Lat/Lng from Address'
+                      : 'Look up from Stop Name'}
+                  </button>
+                )}
+              </div>
+              <input
+                type="text"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+                placeholder="Sagaogurayama Tabuchiyamacho, Ukyo Ward, Kyoto"
+                disabled={readOnly}
+                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
               />
             </div>
 
@@ -671,7 +699,13 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                     photo={photo}
                     readOnly={readOnly}
                     onOpen={() => onOpenPhoto(photos, idx, location || event?.location)}
-                    onDelete={() => onDeletePhoto(photo.clientId)}
+                    onDelete={() =>
+                      setPendingDelete({
+                        type: 'photo',
+                        clientId: photo.clientId,
+                        name: photo.filename,
+                      })
+                    }
                   />
                 ))}
               </div>
@@ -745,7 +779,13 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                       {!readOnly && (
                         <button
                           type="button"
-                          onClick={() => onDeletePdf(pdf.clientId)}
+                          onClick={() =>
+                            setPendingDelete({
+                              type: 'pdf',
+                              clientId: pdf.clientId,
+                              name: pdf.filename,
+                            })
+                          }
                           className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-red-600 hover:bg-white"
                           aria-label={`Delete ${pdf.filename}`}
                         >
@@ -790,6 +830,56 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title={
+          pendingDelete?.type === 'event'
+            ? 'Delete Itinerary Stop'
+            : pendingDelete?.type === 'photo'
+            ? 'Delete Photo'
+            : 'Delete PDF Document'
+        }
+        message={
+          pendingDelete?.type === 'event'
+            ? `Are you sure you want to delete "${location || 'this stop'}" along with its journal entry?`
+            : pendingDelete?.type === 'photo'
+            ? `Permanently delete photo "${pendingDelete.name}"?`
+            : pendingDelete?.type === 'pdf'
+            ? `Permanently delete PDF "${pendingDelete.name}"?`
+            : ''
+        }
+        confirmLabel={
+          pendingDelete?.type === 'event'
+            ? 'Delete Stop'
+            : pendingDelete?.type === 'photo'
+            ? 'Delete Photo'
+            : 'Delete PDF'
+        }
+        busy={deletingItem}
+        onConfirm={async () => {
+          if (!pendingDelete) return;
+          setDeletingItem(true);
+          try {
+            if (pendingDelete.type === 'event' && event) {
+              await onDeleteEvent(event.clientId);
+              setPendingDelete(null);
+              onClose();
+            } else if (pendingDelete.type === 'photo') {
+              await onDeletePhoto(pendingDelete.clientId);
+              setPendingDelete(null);
+            } else if (pendingDelete.type === 'pdf') {
+              await onDeletePdf(pendingDelete.clientId);
+              setPendingDelete(null);
+            }
+          } finally {
+            setDeletingItem(false);
+          }
+        }}
+        onCancel={() => {
+          if (!deletingItem) setPendingDelete(null);
+        }}
+      />
     </div>
   );
 };

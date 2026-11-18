@@ -9,6 +9,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { generateSmartPackingSuggestions } from '../lib/smartPacking';
+import { ConfirmDialog } from './ConfirmDialog';
 import type {
   BookingRecord,
   EventRecord,
@@ -71,6 +72,8 @@ export const PackingChecklistView: React.FC<PackingChecklistViewProps> = ({
   const [filter, setFilter] = useState<'all' | 'remaining' | 'packed'>('all');
   const [suggestionsOpen, setSuggestionsOpen] = useState(true);
   const [addingBusy, setAddingBusy] = useState(false);
+  const [pendingDeleteItem, setPendingDeleteItem] = useState<PackingItemRecord | null>(null);
+  const [deletingBusy, setDeletingBusy] = useState(false);
 
   const smartSuggestions = useMemo(() => {
     if (!trip) return [];
@@ -458,7 +461,7 @@ export const PackingChecklistView: React.FC<PackingChecklistViewProps> = ({
                         {canEdit && (
                           <button
                             type="button"
-                            onClick={() => onDeleteItem(item.clientId)}
+                            onClick={() => setPendingDeleteItem(item)}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
                             aria-label={`Remove ${item.name}`}
                           >
@@ -474,6 +477,31 @@ export const PackingChecklistView: React.FC<PackingChecklistViewProps> = ({
           })}
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteItem)}
+        title="Delete Packing Item?"
+        message={
+          pendingDeleteItem
+            ? `Remove "${pendingDeleteItem.name}" from the packing checklist for ${trip.title}?`
+            : ''
+        }
+        confirmLabel="Delete Item"
+        busy={deletingBusy}
+        onCancel={() => {
+          if (!deletingBusy) setPendingDeleteItem(null);
+        }}
+        onConfirm={async () => {
+          if (!pendingDeleteItem) return;
+          setDeletingBusy(true);
+          try {
+            await onDeleteItem(pendingDeleteItem.clientId);
+            setPendingDeleteItem(null);
+          } finally {
+            setDeletingBusy(false);
+          }
+        }}
+      />
     </div>
   );
 };

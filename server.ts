@@ -3,17 +3,19 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
 import {
   appSettings,
   bookings,
   events,
+  expenses,
   packingItems,
   pdfs,
   photos,
   trips,
   tripShares,
+  users,
 } from './src/db/schema.ts';
 import { type AuthRequest, requireAdmin, requireAuth } from './src/middleware/auth.ts';
 import { hashPassword, signSessionToken, verifyPassword } from './src/lib/localAuth.ts';
@@ -31,6 +33,7 @@ import {
   getAccessibleTripsForUser,
   getBookingAccessByClientId,
   getEventAccessByClientId,
+  getExpenseAccessByClientId,
   getPackingItemAccessByClientId,
   getTripAccessByClientId,
   getTripAccessForTripRow,
@@ -560,6 +563,176 @@ async function startServer() {
     }
   });
 
+  app.get('/api/admin/trips', requireAuth, requireAdmin, async (_req, res) => {
+    try {
+      const tripRows = await db
+        .select({
+          id: trips.id,
+          clientId: trips.clientId,
+          title: trips.title,
+          destination: trips.destination,
+          startDate: trips.startDate,
+          endDate: trips.endDate,
+          archivedAt: trips.archivedAt,
+          createdAt: trips.createdAt,
+          updatedAt: trips.updatedAt,
+          ownerId: trips.userId,
+          ownerName: users.name,
+          ownerEmail: users.email,
+        })
+        .from(trips)
+        .innerJoin(users, eq(trips.userId, users.id))
+        .where(isNull(trips.deletedAt))
+        .orderBy(desc(trips.updatedAt));
+
+      const tripIds = tripRows.map((t) => t.id);
+      const [eventRows, bookingRows, expenseRows] =
+        tripIds.length > 0
+          ? await Promise.all([
+              db
+                .select({ tripId: events.tripId })
+                .from(events)
+                .where(and(inArray(events.tripId, tripIds), isNull(events.deletedAt))),
+              db
+                .select({ tripId: bookings.tripId })
+                .from(bookings)
+                .where(and(inArray(bookings.tripId, tripIds), isNull(bookings.deletedAt))),
+              db
+                .select({ tripId: expenses.tripId })
+                .from(expenses)
+                .where(and(inArray(expenses.tripId, tripIds), isNull(expenses.deletedAt))),
+            ])
+          : [[], [], []];
+
+      const eventCounts = new Map<number, number>();
+      for (const r of eventRows) eventCounts.set(r.tripId, (eventCounts.get(r.tripId) || 0) + 1);
+      const bookingCounts = new Map<number, number>();
+      for (const r of bookingRows)
+        bookingCounts.set(r.tripId, (bookingCounts.get(r.tripId) || 0) + 1);
+      const expenseCounts = new Map<number, number>();
+      for (const r of expenseRows)
+        expenseCounts.set(r.tripId, (expenseCounts.get(r.tripId) || 0) + 1);
+
+      const enriched = tripRows.map((t) => ({
+        ...t,
+        eventCount: eventCounts.get(t.id) || 0,
+        bookingCount: bookingCounts.get(t.id) || 0,
+        expenseCount: expenseCounts.get(t.id) || 0,
+      }));
+
+      res.json({ trips: enriched });
+    } catch (error) {
+      console.error('Admin list trips failed:', error);
+      res.status(500).json({ error: 'Failed to load trips.' });
+    }
+  });
+
+  app.patch(
+    '/api/admin/trips/:clientId/archive',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthRequest, res) => {
+      try {
+        const clientId = String(req.params.clientId);
+        const archived = Boolean(req.body?.archived);
+        const now = new Date();
+
+        const [existing] = await db
+          .select()
+          .from(trips)
+          .where(eq(trips.clientId, clientId))
+          .limit(1);
+
+        if (!existing || existing.deletedAt) {
+          return res.status(404).json({ error: 'Trip not found.' });
+        }
+
+        const [updated] = await db
+          .update(trips)
+          .set({
+            archivedAt: archived ? now : null,
+            updatedAt: now,
+          })
+          .where(eq(trips.id, existing.id))
+          .returning();
+
+        res.json({ trip: updated });
+      } catch (error) {
+        console.error('Admin archive trip failed:', error);
+        res.status(500).json({ error: 'Failed to update trip archive status.' });
+      }
+    }
+  );
+
+  app.delete(
+    '/api/admin/trips/:clientId',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthRequest, res) => {
+      try {
+        const clientId = String(req.params.clientId);
+        const [trip] = await db
+          .select()
+          .from(trips)
+          .where(eq(trips.clientId, clientId))
+          .limit(1);
+
+        if (!trip) {
+          return res.status(404).json({ error: 'Trip not found.' });
+        }
+
+        const [tripEvents, tripBookings] = await Promise.all([
+          db.select({ id: events.id }).from(events).where(eq(events.tripId, trip.id)),
+          db.select({ id: bookings.id }).from(bookings).where(eq(bookings.tripId, trip.id)),
+        ]);
+
+        const eventIds = tripEvents.map((e) => e.id);
+        const bookingIds = tripBookings.map((b) => b.id);
+
+        const photoFilters = [];
+        if (eventIds.length > 0) photoFilters.push(inArray(photos.eventId, eventIds));
+        if (bookingIds.length > 0) photoFilters.push(inArray(photos.bookingId, bookingIds));
+
+        const tripPhotos =
+          photoFilters.length === 2
+            ? await db.select().from(photos).where(or(photoFilters[0], photoFilters[1]))
+            : photoFilters.length === 1
+            ? await db.select().from(photos).where(photoFilters[0])
+            : [];
+
+        const pdfFilters = [];
+        if (eventIds.length > 0) pdfFilters.push(inArray(pdfs.eventId, eventIds));
+        if (bookingIds.length > 0) pdfFilters.push(inArray(pdfs.bookingId, bookingIds));
+
+        const tripPdfs =
+          pdfFilters.length === 2
+            ? await db.select().from(pdfs).where(or(pdfFilters[0], pdfFilters[1]))
+            : pdfFilters.length === 1
+            ? await db.select().from(pdfs).where(pdfFilters[0])
+            : [];
+
+        for (const ph of tripPhotos) {
+          const fullPath = ph.diskPath ? resolveSafeUploadPath(ph.diskPath) : null;
+          if (fullPath && fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+          const thumbPath = ph.thumbDiskPath ? resolveSafeUploadPath(ph.thumbDiskPath) : null;
+          if (thumbPath && fs.existsSync(thumbPath)) fs.unlinkSync(thumbPath);
+        }
+
+        for (const pd of tripPdfs) {
+          const fullPath = pd.diskPath ? resolveSafeUploadPath(pd.diskPath) : null;
+          if (fullPath && fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+        }
+
+        await db.delete(trips).where(eq(trips.id, trip.id));
+
+        res.json({ deleted: true, clientId });
+      } catch (error) {
+        console.error('Admin delete trip failed:', error);
+        res.status(500).json({ error: 'Failed to permanently delete trip.' });
+      }
+    }
+  );
+
   app.get('/api/settings/calendar', requireAuth, async (_req: AuthRequest, res) => {
     try {
       const settings = await getCalendarSettings();
@@ -749,14 +922,15 @@ async function startServer() {
       const accessibleTrips = await getAccessibleTripsForUser(userId);
       const tripIds = accessibleTrips.map((t) => t.id);
 
-      const [syncedEvents, syncedBookings, syncedPackingItems] =
+      const [syncedEvents, syncedBookings, syncedPackingItems, syncedExpenses] =
         tripIds.length > 0
           ? await Promise.all([
               db.select().from(events).where(inArray(events.tripId, tripIds)),
               db.select().from(bookings).where(inArray(bookings.tripId, tripIds)),
               db.select().from(packingItems).where(inArray(packingItems.tripId, tripIds)),
+              db.select().from(expenses).where(inArray(expenses.tripId, tripIds)),
             ])
-          : [[], [], []];
+          : [[], [], [], []];
 
       const eventIds = syncedEvents.map((e) => e.id);
       const bookingIds = syncedBookings.map((b) => b.id);
@@ -790,6 +964,7 @@ async function startServer() {
         events: syncedEvents,
         bookings: syncedBookings,
         packingItems: syncedPackingItems,
+        expenses: syncedExpenses,
         photos: syncedPhotos,
         pdfs: syncedPdfs,
         calendarSettings,
@@ -804,8 +979,25 @@ async function startServer() {
   app.post('/api/trips/upsert', requireAuth, async (req: AuthRequest, res) => {
     try {
       const userId = req.dbUserId!;
-      const { clientId, title, destination, startDate, endDate, description, updatedAt, deletedAt } =
-        req.body || {};
+      const {
+        clientId,
+        title,
+        destination,
+        startDate,
+        endDate,
+        description,
+        startLocationName,
+        startLatitude,
+        startLongitude,
+        endLocationName,
+        endLatitude,
+        endLongitude,
+        targetBudget,
+        budgetCurrency,
+        archivedAt,
+        updatedAt,
+        deletedAt,
+      } = req.body || {};
 
       if (!clientId || !title || !startDate || !endDate) {
         return res.status(400).json({ error: 'Missing required trip fields.' });
@@ -827,11 +1019,42 @@ async function startServer() {
         if (role !== 'owner' && deletedAt) {
           return res.status(403).json({ error: 'Only the trip owner can delete this trip.' });
         }
+        if (
+          role !== 'owner' &&
+          archivedAt !== undefined &&
+          Boolean(archivedAt) !== Boolean(existing.archivedAt)
+        ) {
+          return res.status(403).json({ error: 'Only the trip owner can archive or unarchive this trip.' });
+        }
         accessRole = role;
       }
 
       const now = updatedAt ? new Date(updatedAt) : new Date();
       const deletedTimestamp = deletedAt ? new Date(deletedAt) : null;
+      const archivedTimestamp = archivedAt ? new Date(archivedAt) : null;
+
+      const parseCoord = (v: unknown) => {
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const parseBudget = (v: unknown) => {
+        if (v === null || v === undefined || v === '') return null;
+        const n = Number(v);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      };
+      const cleanCurrency =
+        String(budgetCurrency || 'USD')
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z]/g, '')
+          .slice(0, 6) || 'USD';
+
+      const sLat = parseCoord(startLatitude);
+      const sLng = parseCoord(startLongitude);
+      const eLat = parseCoord(endLatitude);
+      const eLng = parseCoord(endLongitude);
+      const cleanBudget = parseBudget(targetBudget);
 
       const [saved] = await db
         .insert(trips)
@@ -843,6 +1066,15 @@ async function startServer() {
           startDate: String(startDate),
           endDate: String(endDate),
           description: String(description || ''),
+          startLocationName: String(startLocationName || ''),
+          startLatitude: sLat,
+          startLongitude: sLng,
+          endLocationName: String(endLocationName || ''),
+          endLatitude: eLat,
+          endLongitude: eLng,
+          targetBudget: cleanBudget,
+          budgetCurrency: cleanCurrency,
+          archivedAt: archivedTimestamp,
           updatedAt: now,
           deletedAt: deletedTimestamp,
         })
@@ -854,6 +1086,15 @@ async function startServer() {
             startDate: String(startDate),
             endDate: String(endDate),
             description: String(description || ''),
+            startLocationName: String(startLocationName || ''),
+            startLatitude: sLat,
+            startLongitude: sLng,
+            endLocationName: String(endLocationName || ''),
+            endLatitude: eLat,
+            endLongitude: eLng,
+            targetBudget: cleanBudget,
+            budgetCurrency: cleanCurrency,
+            archivedAt: archivedTimestamp,
             updatedAt: now,
             deletedAt: deletedTimestamp,
           },
@@ -923,6 +1164,7 @@ async function startServer() {
         eventDate,
         eventTime,
         location,
+        address,
         latitude,
         longitude,
         details,
@@ -970,6 +1212,7 @@ async function startServer() {
           eventDate: String(eventDate),
           eventTime: String(eventTime || ''),
           location: String(location),
+          address: String(address || ''),
           latitude: Number.isFinite(latNum) ? latNum : null,
           longitude: Number.isFinite(lngNum) ? lngNum : null,
           details: String(details || ''),
@@ -985,6 +1228,7 @@ async function startServer() {
             eventDate: String(eventDate),
             eventTime: String(eventTime || ''),
             location: String(location),
+            address: String(address || ''),
             latitude: Number.isFinite(latNum) ? latNum : null,
             longitude: Number.isFinite(lngNum) ? lngNum : null,
             details: String(details || ''),
@@ -1258,6 +1502,127 @@ async function startServer() {
     } catch (error: unknown) {
       console.error('Packing item delete failed:', error);
       res.status(500).json({ error: 'Failed to delete packing item.' });
+    }
+  });
+
+  app.post('/api/expenses/upsert', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const {
+        clientId,
+        tripClientId,
+        title,
+        amount,
+        currency,
+        expenseDate,
+        category,
+        paymentMethod,
+        notes,
+        updatedAt,
+        deletedAt,
+      } = req.body || {};
+
+      const amountNum = Number(amount);
+      if (!clientId || !tripClientId || !title || !expenseDate || !Number.isFinite(amountNum) || amountNum < 0) {
+        return res.status(400).json({ error: 'Missing or invalid required expense fields.' });
+      }
+
+      const tripAccess = await getTripAccessByClientId(String(tripClientId), userId);
+      if (!tripAccess) {
+        return res.status(404).json({ error: 'Parent trip not found on server yet.' });
+      }
+      if (tripAccess.role === 'view') {
+        return res.status(403).json({
+          error: 'View-only access: cannot modify budget expenses in this trip.',
+        });
+      }
+
+      const existing = await db
+        .select()
+        .from(expenses)
+        .where(eq(expenses.clientId, String(clientId)))
+        .limit(1);
+
+      if (existing.length > 0 && existing[0].tripId !== tripAccess.trip.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const now = updatedAt ? new Date(updatedAt) : new Date();
+      const deletedTimestamp = deletedAt ? new Date(deletedAt) : null;
+      const cleanCurrency =
+        String(currency || 'USD')
+          .trim()
+          .toUpperCase()
+          .replace(/[^A-Z]/g, '')
+          .slice(0, 6) || 'USD';
+
+      const [saved] = await db
+        .insert(expenses)
+        .values({
+          clientId: String(clientId),
+          tripClientId: String(tripClientId),
+          tripId: tripAccess.trip.id,
+          userId,
+          title: String(title),
+          amount: Number(amountNum.toFixed(2)),
+          currency: cleanCurrency,
+          expenseDate: String(expenseDate),
+          category: String(category || 'Other'),
+          paymentMethod: String(paymentMethod || 'Credit Card'),
+          notes: String(notes || ''),
+          updatedAt: now,
+          deletedAt: deletedTimestamp,
+        })
+        .onConflictDoUpdate({
+          target: expenses.clientId,
+          set: {
+            tripClientId: String(tripClientId),
+            tripId: tripAccess.trip.id,
+            title: String(title),
+            amount: Number(amountNum.toFixed(2)),
+            currency: cleanCurrency,
+            expenseDate: String(expenseDate),
+            category: String(category || 'Other'),
+            paymentMethod: String(paymentMethod || 'Credit Card'),
+            notes: String(notes || ''),
+            updatedAt: now,
+            deletedAt: deletedTimestamp,
+          },
+        })
+        .returning();
+
+      res.json(saved);
+    } catch (error: unknown) {
+      console.error('Expense upsert failed:', error);
+      res.status(500).json({ error: 'Failed to save expense.' });
+    }
+  });
+
+  app.delete('/api/expenses/:clientId', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const userId = req.dbUserId!;
+      const clientId = String(req.params.clientId);
+      const access = await getExpenseAccessByClientId(clientId, userId);
+
+      if (!access) {
+        return res.status(404).json({ error: 'Expense not found.' });
+      }
+      if (access.role === 'view') {
+        return res.status(403).json({
+          error: 'View-only access: cannot delete expenses in this trip.',
+        });
+      }
+
+      const now = new Date();
+      await db
+        .update(expenses)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(expenses.id, access.expense.id));
+
+      res.json({ deleted: true, clientId });
+    } catch (error: unknown) {
+      console.error('Expense delete failed:', error);
+      res.status(500).json({ error: 'Failed to delete expense.' });
     }
   });
 
