@@ -1,3 +1,5 @@
+import { parseFlexibleTime } from './timeUtils';
+
 export interface ParsedCsvStop {
   eventDate: string;
   eventTime: string;
@@ -158,9 +160,12 @@ export function parseItineraryCsv(csvText: string): CsvParseResult {
       warnings.push(`Row ${i + 1} (${rawLocation}): Ignored invalid coordinates.`);
     }
 
+    const rawTime = timeIdx !== -1 ? (cols[timeIdx] || '').trim() : '';
+    const parsedTime = rawTime ? parseFlexibleTime(rawTime, '24h') : '';
+
     rows.push({
       eventDate: normalizedDate,
-      eventTime: timeIdx !== -1 ? (cols[timeIdx] || '').trim() : '',
+      eventTime: parsedTime !== null ? parsedTime : rawTime,
       location: rawLocation.trim(),
       latitude: lat,
       longitude: lng,

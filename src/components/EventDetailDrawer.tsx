@@ -17,6 +17,7 @@ import { sanitizeHtml } from '../lib/htmlSanitizer';
 import { RichTextEditor } from './RichTextEditor';
 import { MiniCartoMap } from './MiniCartoMap';
 import { ConfirmDialog } from './ConfirmDialog';
+import { TimeInputField } from './TimeInputField';
 import type { EventRecord, PdfRecord, PhotoRecord } from '../types/journal';
 
 interface GeocodeCandidate {
@@ -466,7 +467,7 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1.5">
                   Date
@@ -480,18 +481,12 @@ export const EventDetailDrawer: React.FC<EventDetailDrawerProps> = ({
                   className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                  Time (optional)
-                </label>
-                <input
-                  type="time"
-                  value={eventTime}
-                  onChange={(e) => setEventTime(e.target.value)}
-                  disabled={readOnly}
-                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none disabled:bg-slate-50 disabled:text-slate-700"
-                />
-              </div>
+              <TimeInputField
+                value={eventTime}
+                onChange={setEventTime}
+                disabled={readOnly}
+                label="Time (optional)"
+              />
             </div>
 
             <div className="space-y-3">
