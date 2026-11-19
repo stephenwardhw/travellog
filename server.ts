@@ -3,8 +3,11 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import multer from 'multer';
+import JSZip from 'jszip';
 import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from './src/db/index.ts';
+import { buildItineraryCsv, slugifyTripTitle } from './src/lib/csvExporter.ts';
+import { buildTripReportPdf, detectImageFormatFromBytes } from './src/lib/tripPdfBuilder.ts';
 import {
   appSettings,
   bookings,
@@ -729,6 +732,324 @@ async function startServer() {
       } catch (error) {
         console.error('Admin delete trip failed:', error);
         res.status(500).json({ error: 'Failed to permanently delete trip.' });
+      }
+    }
+  );
+
+  app.get(
+    '/api/admin/trips/:clientId/backup',
+    requireAuth,
+    requireAdmin,
+    async (req: AuthRequest, res) => {
+      try {
+        const clientId = String(req.params.clientId);
+        const [trip] = await db
+          .select()
+          .from(trips)
+          .where(and(eq(trips.clientId, clientId), isNull(trips.deletedAt)))
+          .limit(1);
+
+        if (!trip) {
+          return res.status(404).json({ error: 'Trip not found.' });
+        }
+
+        const owner = await findUserById(trip.userId);
+
+        const [tripEvents, tripBookings, tripExpenses, tripPacking] = await Promise.all([
+          db
+            .select()
+            .from(events)
+            .where(and(eq(events.tripId, trip.id), isNull(events.deletedAt))),
+          db
+            .select()
+            .from(bookings)
+            .where(and(eq(bookings.tripId, trip.id), isNull(bookings.deletedAt))),
+          db
+            .select()
+            .from(expenses)
+            .where(and(eq(expenses.tripId, trip.id), isNull(expenses.deletedAt))),
+          db
+            .select()
+            .from(packingItems)
+            .where(and(eq(packingItems.tripId, trip.id), isNull(packingItems.deletedAt))),
+        ]);
+
+        const eventIds = tripEvents.map((e) => e.id);
+        const bookingIds = tripBookings.map((b) => b.id);
+
+        const photoFilters = [];
+        if (eventIds.length > 0) photoFilters.push(inArray(photos.eventId, eventIds));
+        if (bookingIds.length > 0) photoFilters.push(inArray(photos.bookingId, bookingIds));
+
+        const tripPhotos =
+          photoFilters.length === 2
+            ? await db
+                .select()
+                .from(photos)
+                .where(and(isNull(photos.deletedAt), or(photoFilters[0], photoFilters[1])))
+            : photoFilters.length === 1
+            ? await db
+                .select()
+                .from(photos)
+                .where(and(isNull(photos.deletedAt), photoFilters[0]))
+            : [];
+
+        const pdfFilters = [];
+        if (eventIds.length > 0) pdfFilters.push(inArray(pdfs.eventId, eventIds));
+        if (bookingIds.length > 0) pdfFilters.push(inArray(pdfs.bookingId, bookingIds));
+
+        const tripPdfs =
+          pdfFilters.length === 2
+            ? await db
+                .select()
+                .from(pdfs)
+                .where(and(isNull(pdfs.deletedAt), or(pdfFilters[0], pdfFilters[1])))
+            : pdfFilters.length === 1
+            ? await db
+                .select()
+                .from(pdfs)
+                .where(and(isNull(pdfs.deletedAt), pdfFilters[0]))
+            : [];
+
+        const eventByClientId = new Map(tripEvents.map((e) => [e.clientId, e]));
+        const bookingByClientId = new Map(tripBookings.map((b) => [b.clientId, b]));
+
+        const photosByEvent = new Map<string, typeof tripPhotos>();
+        const photosByBooking = new Map<string, typeof tripPhotos>();
+        for (const ph of tripPhotos) {
+          if (ph.bookingClientId) {
+            const list = photosByBooking.get(ph.bookingClientId) || [];
+            list.push(ph);
+            photosByBooking.set(ph.bookingClientId, list);
+          } else if (ph.eventClientId) {
+            const list = photosByEvent.get(ph.eventClientId) || [];
+            list.push(ph);
+            photosByEvent.set(ph.eventClientId, list);
+          }
+        }
+
+        const pdfsByEvent = new Map<string, typeof tripPdfs>();
+        const pdfsByBooking = new Map<string, typeof tripPdfs>();
+        for (const pd of tripPdfs) {
+          if (pd.bookingClientId) {
+            const list = pdfsByBooking.get(pd.bookingClientId) || [];
+            list.push(pd);
+            pdfsByBooking.set(pd.bookingClientId, list);
+          } else if (pd.eventClientId) {
+            const list = pdfsByEvent.get(pd.eventClientId) || [];
+            list.push(pd);
+            pdfsByEvent.set(pd.eventClientId, list);
+          }
+        }
+
+        const tripSlug = slugifyTripTitle(trip.title);
+
+        const pdfReportBytes = await buildTripReportPdf({
+          trip: {
+            ...trip,
+            ownerName: owner?.name || '',
+            ownerEmail: owner?.email || '',
+          },
+          events: tripEvents,
+          bookings: tripBookings,
+          expenses: tripExpenses,
+          photosByEvent,
+          photosByBooking,
+          pdfsByEvent,
+          pdfsByBooking,
+          options: {
+            includeBookings: true,
+            includeBudget: true,
+            includeDetails: true,
+            includeJournal: true,
+            includeCoords: true,
+            includePhotos: true,
+            includePdfs: true,
+            generatedByLabel: 'TravelLog Admin Backup',
+          },
+          resolvePhotoImage: async (photo) => {
+            const candidatePaths = [photo.thumbDiskPath, photo.diskPath].filter(
+              (p): p is string => Boolean(p && p.trim())
+            );
+            for (const relPath of candidatePaths) {
+              const safePath = resolveSafeUploadPath(relPath);
+              if (!safePath || !fs.existsSync(safePath)) continue;
+              const buf = fs.readFileSync(safePath);
+              const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+              const fmt = detectImageFormatFromBytes(bytes);
+              if (fmt) {
+                return { bytes, format: fmt };
+              }
+            }
+            return null;
+          },
+        });
+
+        const itineraryCsv = buildItineraryCsv({
+          trip,
+          events: tripEvents,
+          bookings: tripBookings,
+        });
+
+        const zip = new JSZip();
+        const usedZipPaths = new Set<string>();
+
+        const sanitizeEntryName = (rawName: string, fallbackExt = ''): string => {
+          const cleanBase = path
+            .basename(rawName || 'file')
+            .replace(/[^a-zA-Z0-9._-]/g, '_')
+            .replace(/^_+/, '');
+          const base = cleanBase || `file${fallbackExt}`;
+          return base;
+        };
+
+        const allocateUniquePath = (dirPath: string, desiredName: string): string => {
+          const parsed = path.posix.parse(desiredName);
+          let candidate = path.posix.join(dirPath, desiredName);
+          let counter = 2;
+          while (usedZipPaths.has(candidate)) {
+            candidate = path.posix.join(dirPath, `${parsed.name}-${counter}${parsed.ext}`);
+            counter++;
+          }
+          usedZipPaths.add(candidate);
+          return candidate;
+        };
+
+        zip.file(`${tripSlug}-report.pdf`, pdfReportBytes);
+        zip.file(`${tripSlug}-itinerary.csv`, itineraryCsv);
+
+        const missingFiles: string[] = [];
+        const archivedPhotosMeta: Array<Record<string, unknown>> = [];
+        const archivedPdfsMeta: Array<Record<string, unknown>> = [];
+
+        for (const ph of tripPhotos) {
+          const candidatePaths = [ph.diskPath, ph.thumbDiskPath].filter((p): p is string =>
+            Boolean(p && p.trim())
+          );
+          let fileBytes: Buffer | null = null;
+          for (const relPath of candidatePaths) {
+            const safePath = resolveSafeUploadPath(relPath);
+            if (safePath && fs.existsSync(safePath)) {
+              fileBytes = fs.readFileSync(safePath);
+              break;
+            }
+          }
+
+          let folder = 'images/other';
+          if (ph.bookingClientId && bookingByClientId.has(ph.bookingClientId)) {
+            const bk = bookingByClientId.get(ph.bookingClientId)!;
+            folder = `images/stays/${bk.checkInDate}-${slugifyTripTitle(bk.name).slice(0, 40)}`;
+          } else if (ph.eventClientId && eventByClientId.has(ph.eventClientId)) {
+            const ev = eventByClientId.get(ph.eventClientId)!;
+            folder = `images/stops/${ev.eventDate}-${slugifyTripTitle(ev.location).slice(0, 40)}`;
+          }
+
+          const zipPath = allocateUniquePath(folder, sanitizeEntryName(ph.filename, '.jpg'));
+          if (fileBytes) {
+            zip.file(zipPath, fileBytes);
+            archivedPhotosMeta.push({
+              clientId: ph.clientId,
+              filename: ph.filename,
+              mimeType: ph.mimeType,
+              sizeBytes: ph.sizeBytes,
+              caption: ph.caption,
+              eventClientId: ph.eventClientId,
+              bookingClientId: ph.bookingClientId,
+              zipPath,
+            });
+          } else {
+            missingFiles.push(`image: ${ph.filename} (clientId=${ph.clientId})`);
+          }
+        }
+
+        for (const pd of tripPdfs) {
+          const safePath = pd.diskPath ? resolveSafeUploadPath(pd.diskPath) : null;
+          const fileBytes = safePath && fs.existsSync(safePath) ? fs.readFileSync(safePath) : null;
+
+          let folder = 'documents/other';
+          if (pd.bookingClientId && bookingByClientId.has(pd.bookingClientId)) {
+            const bk = bookingByClientId.get(pd.bookingClientId)!;
+            folder = `documents/stays/${bk.checkInDate}-${slugifyTripTitle(bk.name).slice(0, 40)}`;
+          } else if (pd.eventClientId && eventByClientId.has(pd.eventClientId)) {
+            const ev = eventByClientId.get(pd.eventClientId)!;
+            folder = `documents/stops/${ev.eventDate}-${slugifyTripTitle(ev.location).slice(0, 40)}`;
+          }
+
+          const zipPath = allocateUniquePath(folder, sanitizeEntryName(pd.filename, '.pdf'));
+          if (fileBytes) {
+            zip.file(zipPath, fileBytes);
+            archivedPdfsMeta.push({
+              clientId: pd.clientId,
+              filename: pd.filename,
+              mimeType: pd.mimeType,
+              sizeBytes: pd.sizeBytes,
+              eventClientId: pd.eventClientId,
+              bookingClientId: pd.bookingClientId,
+              zipPath,
+            });
+          } else {
+            missingFiles.push(`document: ${pd.filename} (clientId=${pd.clientId})`);
+          }
+        }
+
+        const jsonPayload = {
+          exportedAt: new Date().toISOString(),
+          exportedBy: req.user?.email || 'admin',
+          owner: owner ? { name: owner.name, email: owner.email } : null,
+          trip,
+          bookings: tripBookings,
+          events: tripEvents,
+          expenses: tripExpenses,
+          packingItems: tripPacking,
+          photos: archivedPhotosMeta,
+          pdfs: archivedPdfsMeta,
+          missingFiles,
+        };
+        zip.file('trip-backup.json', JSON.stringify(jsonPayload, null, 2));
+
+        const manifestLines = [
+          `TravelLog Admin Trip Backup`,
+          `===========================`,
+          `Trip Title: ${trip.title}`,
+          `Destination: ${trip.destination || '-'}`,
+          `Dates: ${trip.startDate} to ${trip.endDate}`,
+          `Trip Client ID: ${trip.clientId}`,
+          `Owner: ${owner ? `${owner.name || owner.email} <${owner.email}>` : 'Unknown'}`,
+          `Exported By (Admin): ${req.user?.email || 'admin'}`,
+          `Exported At: ${jsonPayload.exportedAt}`,
+          ``,
+          `Contents Summary:`,
+          `- PDF Report: ${tripSlug}-report.pdf`,
+          `- CSV Itinerary: ${tripSlug}-itinerary.csv`,
+          `- JSON Snapshot: trip-backup.json`,
+          `- Stays: ${tripBookings.length}`,
+          `- Itinerary Stops: ${tripEvents.length}`,
+          `- Expenses: ${tripExpenses.length}`,
+          `- Packing Items: ${tripPacking.length}`,
+          `- Linked Images Included: ${archivedPhotosMeta.length} / ${tripPhotos.length}`,
+          `- Linked Documents Included: ${archivedPdfsMeta.length} / ${tripPdfs.length}`,
+        ];
+        if (missingFiles.length > 0) {
+          manifestLines.push('', 'Missing Files on Server Disk:', ...missingFiles.map((m) => `- ${m}`));
+        }
+        zip.file('backup-manifest.txt', `${manifestLines.join('\n')}\n`);
+
+        const zipBuffer = await zip.generateAsync({
+          type: 'nodebuffer',
+          compression: 'DEFLATE',
+          compressionOptions: { level: 6 },
+        });
+
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${tripSlug}-backup.zip"`
+        );
+        res.setHeader('Content-Length', String(zipBuffer.length));
+        res.send(zipBuffer);
+      } catch (error) {
+        console.error('Admin trip backup ZIP failed:', error);
+        res.status(500).json({ error: 'Failed to generate trip backup ZIP archive.' });
       }
     }
   );

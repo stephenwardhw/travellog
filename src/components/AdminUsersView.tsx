@@ -3,6 +3,7 @@ import {
   Archive,
   ArchiveRestore,
   Calendar,
+  FileArchive,
   KeyRound,
   MapPin,
   Palette,
@@ -27,6 +28,7 @@ interface AdminUsersViewProps {
   calendarSettings: CalendarThemeSettings;
   onCalendarSettingsSaved: (settings: CalendarThemeSettings) => Promise<void> | void;
   onTripsChanged?: (deletedClientId?: string) => Promise<void> | void;
+  onDownloadTripBackup?: (clientId: string, title: string) => Promise<void> | void;
   onUnauthorized: () => void;
 }
 
@@ -68,6 +70,7 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   calendarSettings,
   onCalendarSettingsSaved,
   onTripsChanged,
+  onDownloadTripBackup,
   onUnauthorized,
 }) => {
   const { isOnline } = useNetworkStatus();
@@ -403,6 +406,21 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
       await onTripsChanged?.(target.clientId);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unable to delete trip.');
+    } finally {
+      setTripBusyClientId(null);
+    }
+  };
+
+  const handleBackupTripZip = async (target: AdminTripSummary) => {
+    if (!onDownloadTripBackup) return;
+    setTripBusyClientId(target.clientId);
+    setError(null);
+    setNotice(`Preparing backup ZIP for "${target.title}"...`);
+    try {
+      await onDownloadTripBackup(target.clientId, target.title);
+      setNotice(`Backup ZIP downloaded for "${target.title}".`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Unable to create trip backup ZIP.');
     } finally {
       setTripBusyClientId(null);
     }
@@ -902,6 +920,19 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    {onDownloadTripBackup && (
+                      <button
+                        type="button"
+                        disabled={!isOnline || busy}
+                        onClick={() => handleBackupTripZip(tr)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-45 min-h-[36px] whitespace-nowrap"
+                        title="Download full trip backup ZIP (PDF report, CSV itinerary, JSON, linked documents, and images)"
+                      >
+                        <FileArchive className="w-3.5 h-3.5 text-teal-700" />
+                        Backup ZIP
+                      </button>
+                    )}
+
                     {isArchived ? (
                       <button
                         type="button"

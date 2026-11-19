@@ -5,6 +5,9 @@ import {
   CheckCircle2,
   Clock,
   Download,
+  FileArchive,
+  FileDown,
+  FileSpreadsheet,
   FileText,
   Image as ImageIcon,
   MapPin,
@@ -13,6 +16,14 @@ import {
   X,
 } from 'lucide-react';
 import { ensureDisplayHtml, sanitizeHtml } from '../lib/htmlSanitizer';
+import { resolveBrowserPhotoForPdf } from '../lib/browserPdfImages';
+import {
+  buildItineraryCsv,
+  downloadBlobFile,
+  downloadTextFile,
+  slugifyTripTitle,
+} from '../lib/csvExporter';
+import { buildTripReportPdf } from '../lib/tripPdfBuilder';
 import { formatMoney } from './BudgetView';
 import type {
   BookingRecord,
@@ -34,6 +45,8 @@ interface TripReportModalProps {
   pdfsByEvent: Map<string, PdfRecord[]>;
   pdfsByBooking?: Map<string, PdfRecord[]>;
   authToken: string;
+  isAdmin?: boolean;
+  onDownloadAdminBackupZip?: () => Promise<void> | void;
   onOpenPhoto: (photos: PhotoRecord[], index: number, title?: string) => void;
   onClose: () => void;
 }
@@ -186,6 +199,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   pdfsByEvent,
   pdfsByBooking = new Map<string, PdfRecord[]>(),
   authToken,
+  isAdmin = false,
+  onDownloadAdminBackupZip,
   onOpenPhoto,
   onClose,
 }) => {
@@ -199,6 +214,8 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
   const [preferFullRes, setPreferFullRes] = useState(false);
   const [exportStatus, setExportStatus] = useState<string | null>(null);
   const [exportingHtml, setExportingHtml] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
 
   const chronologicalEvents = useMemo(() => {
     return [...events].sort((a, b) => {
@@ -271,6 +288,72 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
 
   const handlePrint = () => {
     window.print();
+  };
+
+  const handleExportCsv = () => {
+    const csv = buildItineraryCsv({
+      trip,
+      events: chronologicalEvents,
+      bookings: includeBookings ? sortedBookings : [],
+    });
+    const slug = slugifyTripTitle(trip.title);
+    downloadTextFile(`${slug}-itinerary.csv`, csv, 'text/csv;charset=utf-8');
+    setExportStatus('CSV itinerary exported.');
+  };
+
+  const handleDownloadPdf = async () => {
+    setExportingPdf(true);
+    setExportStatus('Building PDF itinerary...');
+    try {
+      const pdfBytes = await buildTripReportPdf({
+        trip,
+        events: chronologicalEvents,
+        bookings: sortedBookings,
+        expenses: sortedExpenses,
+        photosByEvent,
+        photosByBooking,
+        pdfsByEvent,
+        pdfsByBooking,
+        options: {
+          includeBookings,
+          includeBudget,
+          includeDetails,
+          includeJournal,
+          includeCoords,
+          includePhotos,
+          includePdfs,
+        },
+        resolvePhotoImage: (photo) =>
+          resolveBrowserPhotoForPdf(photo as PhotoRecord, authToken, preferFullRes),
+        onProgress: (msg) => setExportStatus(msg),
+      });
+      const slug = slugifyTripTitle(trip.title);
+      const copy = new Uint8Array(pdfBytes);
+      downloadBlobFile(`${slug}-itinerary.pdf`, new Blob([copy], { type: 'application/pdf' }));
+      setExportStatus('PDF itinerary downloaded.');
+    } catch (err: unknown) {
+      setExportStatus(
+        err instanceof Error ? err.message : 'Unable to generate PDF itinerary.'
+      );
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const handleAdminBackupZip = async () => {
+    if (!isAdmin || !onDownloadAdminBackupZip) return;
+    setExportingZip(true);
+    setExportStatus('Creating admin trip backup ZIP (PDF, documents, and images)...');
+    try {
+      await onDownloadAdminBackupZip();
+      setExportStatus('Admin trip backup ZIP downloaded.');
+    } catch (err: unknown) {
+      setExportStatus(
+        err instanceof Error ? err.message : 'Unable to create admin trip backup ZIP.'
+      );
+    } finally {
+      setExportingZip(false);
+    }
   };
 
   const handleDownloadHtml = async () => {
@@ -790,18 +873,50 @@ export const TripReportModal: React.FC<TripReportModalProps> = ({
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 min-h-[38px]"
               >
                 <Printer className="w-3.5 h-3.5 text-slate-600" />
-                Print / Save PDF
+                Print
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportCsv}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 min-h-[38px]"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-teal-700" />
+                Export CSV
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={exportingPdf || exportingHtml}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-50 min-h-[38px]"
+              >
+                <FileDown className="w-3.5 h-3.5" />
+                {exportingPdf ? 'Generating PDF...' : 'Download PDF'}
               </button>
 
               <button
                 type="button"
                 onClick={handleDownloadHtml}
-                disabled={exportingHtml}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-teal-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-teal-800 disabled:opacity-50 min-h-[38px]"
+                disabled={exportingHtml || exportingPdf}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 min-h-[38px]"
               >
-                <Download className="w-3.5 h-3.5" />
-                {exportingHtml ? 'Exporting...' : 'Download HTML'}
+                <Download className="w-3.5 h-3.5 text-slate-600" />
+                {exportingHtml ? 'Exporting...' : 'HTML'}
               </button>
+
+              {isAdmin && onDownloadAdminBackupZip && (
+                <button
+                  type="button"
+                  onClick={handleAdminBackupZip}
+                  disabled={exportingZip}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50 min-h-[38px]"
+                  title="Admin only: download full ZIP archive with PDF report, linked documents, and images"
+                >
+                  <FileArchive className="w-3.5 h-3.5 text-amber-700" />
+                  {exportingZip ? 'Packaging ZIP...' : 'Admin Backup ZIP'}
+                </button>
+              )}
 
               <button
                 type="button"

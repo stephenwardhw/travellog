@@ -4,7 +4,10 @@ import {
   BedDouble,
   Calendar as CalendarIcon,
   ChevronDown,
+  Download,
   Edit3,
+  FileArchive,
+  FileDown,
   FileSpreadsheet,
   FileText,
   ListTodo,
@@ -25,6 +28,14 @@ import { useNetworkStatus } from './lib/network';
 import { runFullSync } from './lib/syncEngine';
 import { generateThumbnailBlob } from './lib/imageThumb';
 import { formatDayShiftLabel, shiftIsoDate } from './lib/dateShift';
+import {
+  buildItineraryCsv,
+  downloadBlobFile,
+  downloadTextFile,
+  slugifyTripTitle,
+} from './lib/csvExporter';
+import { buildTripReportPdf } from './lib/tripPdfBuilder';
+import { resolveBrowserPhotoForPdf } from './lib/browserPdfImages';
 import type { ParsedCsvStop } from './lib/csvParser';
 import {
   DEFAULT_CALENDAR_SETTINGS,
@@ -104,6 +115,10 @@ export default function App() {
   const [csvModalOpen, setCsvModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
+  const [exportingPdfQuick, setExportingPdfQuick] = useState(false);
+  const [exportingZipQuick, setExportingZipQuick] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState<EventRecord | null>(null);
@@ -130,15 +145,19 @@ export default function App() {
   const network = useNetworkStatus();
 
   useEffect(() => {
-    if (!mobileMenuOpen) return;
+    if (!mobileMenuOpen && !exportMenuOpen) return;
     const handlePointerDown = (e: MouseEvent | TouchEvent) => {
-      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+      if (mobileMenuOpen && mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
         setMobileMenuOpen(false);
+      }
+      if (exportMenuOpen && exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
       }
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setMobileMenuOpen(false);
+        setExportMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handlePointerDown);
@@ -149,7 +168,7 @@ export default function App() {
       document.removeEventListener('touchstart', handlePointerDown);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [mobileMenuOpen]);
+  }, [mobileMenuOpen, exportMenuOpen]);
 
   const loadFromLocalDb = useCallback(async () => {
     const [
@@ -1468,6 +1487,94 @@ export default function App() {
     setBookingDrawerOpen(true);
   };
 
+  const handleExportActiveTripCsv = () => {
+    if (!activeTrip) return;
+    const csv = buildItineraryCsv({
+      trip: activeTrip,
+      events: activeTripEvents,
+      bookings: activeTripBookings,
+    });
+    const slug = slugifyTripTitle(activeTrip.title);
+    downloadTextFile(`${slug}-itinerary.csv`, csv, 'text/csv;charset=utf-8');
+    setSyncNotice(`Exported CSV itinerary for "${activeTrip.title}".`);
+  };
+
+  const handleExportActiveTripPdf = async () => {
+    if (!activeTrip || !session) return;
+    setExportingPdfQuick(true);
+    setSyncNotice(`Generating PDF itinerary for "${activeTrip.title}"...`);
+    try {
+      const pdfBytes = await buildTripReportPdf({
+        trip: activeTrip,
+        events: activeTripEvents,
+        bookings: activeTripBookings,
+        expenses: activeTripExpenses,
+        photosByEvent,
+        photosByBooking,
+        pdfsByEvent,
+        pdfsByBooking,
+        resolvePhotoImage: (photo) =>
+          resolveBrowserPhotoForPdf(photo as PhotoRecord, session.token, false),
+      });
+      const slug = slugifyTripTitle(activeTrip.title);
+      const copy = new Uint8Array(pdfBytes);
+      downloadBlobFile(`${slug}-itinerary.pdf`, new Blob([copy], { type: 'application/pdf' }));
+      setSyncNotice(`Exported PDF itinerary for "${activeTrip.title}".`);
+    } catch (err: unknown) {
+      setSyncNotice(
+        err instanceof Error ? err.message : 'Unable to generate PDF itinerary.'
+      );
+    } finally {
+      setExportingPdfQuick(false);
+    }
+  };
+
+  const handleDownloadTripBackupZip = async (
+    targetClientId?: string,
+    targetTitle?: string
+  ) => {
+    if (!session || session.user.role !== 'admin') {
+      throw new Error('Administrator privileges are required to create trip backup ZIP archives.');
+    }
+    const clientId = targetClientId || activeTrip?.clientId;
+    const title = targetTitle || activeTrip?.title || 'trip';
+    if (!clientId) {
+      throw new Error('No trip selected to back up.');
+    }
+    if (!network.isOnline) {
+      throw new Error('Admin trip backup ZIP requires an active connection to the server.');
+    }
+
+    setExportingZipQuick(true);
+    setSyncNotice(`Preparing admin backup ZIP for "${title}"...`);
+    try {
+      if (pendingCount > 0) {
+        await runFullSync(session.token, false);
+        await loadFromLocalDb();
+      }
+      const res = await fetch(
+        `/api/admin/trips/${encodeURIComponent(clientId)}/backup`,
+        {
+          headers: { Authorization: `Bearer ${session.token}` },
+        }
+      );
+      if (res.status === 401) {
+        await handleSignOut();
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Failed to download trip backup ZIP.');
+      }
+      const blob = await res.blob();
+      const slug = slugifyTripTitle(title);
+      downloadBlobFile(`${slug}-backup.zip`, blob);
+      setSyncNotice(`Downloaded admin backup ZIP for "${title}".`);
+    } finally {
+      setExportingZipQuick(false);
+    }
+  };
+
   if (!authReady) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center text-sm text-slate-500">
@@ -1707,6 +1814,57 @@ export default function App() {
                   </button>
                 )}
 
+                {activeTrip && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={exportingPdfQuick}
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleExportActiveTripPdf();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    <FileDown className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    {exportingPdfQuick ? 'Generating PDF...' : 'Export PDF Itinerary'}
+                  </button>
+                )}
+
+                {activeTrip && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleExportActiveTripCsv();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    <Download className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                    Export CSV Itinerary
+                  </button>
+                )}
+
+                {activeTrip && isAdmin && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={exportingZipQuick || !network.isOnline}
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleDownloadTripBackupZip().catch((err) =>
+                        setSyncNotice(
+                          err instanceof Error ? err.message : 'Backup ZIP failed.'
+                        )
+                      );
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                  >
+                    <FileArchive className="w-3.5 h-3.5 shrink-0" />
+                    {exportingZipQuick ? 'Packaging ZIP...' : 'Admin Backup ZIP'}
+                  </button>
+                )}
+
                 <button
                   type="button"
                   role="menuitem"
@@ -1922,6 +2080,84 @@ export default function App() {
                 <FileText className="w-3.5 h-3.5 text-teal-700" />
                 Report
               </button>
+            )}
+
+            {activeTrip && (
+              <div ref={exportMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setExportMenuOpen((prev) => !prev)}
+                  aria-expanded={exportMenuOpen}
+                  aria-haspopup="menu"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap min-h-[40px]"
+                >
+                  <Download className="w-3.5 h-3.5 text-teal-700" />
+                  <span>Export</span>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 text-slate-500 transition-transform ${
+                      exportMenuOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+
+                {exportMenuOpen && (
+                  <div
+                    role="menu"
+                    aria-label="Export trip itinerary"
+                    className="absolute left-0 mt-1.5 w-60 rounded-xl border border-slate-200 bg-white shadow-lg py-1.5 z-40"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={exportingPdfQuick}
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        handleExportActiveTripPdf();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <FileDown className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                      {exportingPdfQuick ? 'Generating PDF...' : 'Export PDF Itinerary'}
+                    </button>
+
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setExportMenuOpen(false);
+                        handleExportActiveTripCsv();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-teal-700 shrink-0" />
+                      Export CSV Itinerary
+                    </button>
+
+                    {isAdmin && (
+                      <>
+                        <div className="my-1 border-t border-slate-100" />
+                        <button
+                          type="button"
+                          role="menuitem"
+                          disabled={exportingZipQuick || !network.isOnline}
+                          onClick={() => {
+                            setExportMenuOpen(false);
+                            handleDownloadTripBackupZip().catch((err) =>
+                              setSyncNotice(
+                                err instanceof Error ? err.message : 'Backup ZIP failed.'
+                              )
+                            );
+                          }}
+                          className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+                        >
+                          <FileArchive className="w-3.5 h-3.5 shrink-0" />
+                          {exportingZipQuick ? 'Packaging ZIP...' : 'Admin Backup ZIP'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
 
             <button
@@ -2144,6 +2380,7 @@ export default function App() {
               await offlineDb.setMeta('calendarSettings', next);
             }}
             onTripsChanged={handleAdminTripsChanged}
+            onDownloadTripBackup={handleDownloadTripBackupZip}
             onUnauthorized={handleSignOut}
           />
         )}
@@ -2218,6 +2455,8 @@ export default function App() {
         pdfsByEvent={pdfsByEvent}
         pdfsByBooking={pdfsByBooking}
         authToken={session.token}
+        isAdmin={isAdmin}
+        onDownloadAdminBackupZip={() => handleDownloadTripBackupZip()}
         onOpenPhoto={(list, index, title) =>
           setLightboxState({ photos: list, initialIndex: index, title })
         }
