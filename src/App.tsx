@@ -24,6 +24,7 @@ import { offlineDb } from './lib/offlineDb';
 import { useNetworkStatus } from './lib/network';
 import { runFullSync } from './lib/syncEngine';
 import { generateThumbnailBlob } from './lib/imageThumb';
+import { formatDayShiftLabel, shiftIsoDate } from './lib/dateShift';
 import type { ParsedCsvStop } from './lib/csvParser';
 import {
   DEFAULT_CALENDAR_SETTINGS,
@@ -536,22 +537,28 @@ export default function App() {
     endLongitude: number | null;
     targetBudget: number | null;
     budgetCurrency: string;
+    dateShift?: {
+      deltaDays: number;
+      adjustEvents: boolean;
+      adjustBookings: boolean;
+    };
   }) => {
     if (editingTrip && editingTrip.accessRole === 'view') {
       setSyncNotice('This shared trip is view-only and cannot be modified.');
       return;
     }
+    const { dateShift, ...tripFields } = data;
     const now = new Date().toISOString();
     const record: TripRecord = editingTrip
       ? {
           ...editingTrip,
-          ...data,
+          ...tripFields,
           updatedAt: now,
           syncStatus: 'pending',
         }
       : {
           clientId: makeId(),
-          ...data,
+          ...tripFields,
           archivedAt: null,
           accessRole: 'owner',
           ownerName: session?.user.name || session?.user.email || '',
@@ -568,6 +575,75 @@ export default function App() {
       clientId: record.clientId,
       createdAt: now,
     });
+
+    let shiftedEventCount = 0;
+    let shiftedBookingCount = 0;
+
+    if (editingTrip && dateShift && dateShift.deltaDays !== 0) {
+      if (dateShift.adjustEvents) {
+        const allEventsRaw = await offlineDb.getAllEventsRaw();
+        const tripEvents = allEventsRaw.filter(
+          (ev) => ev.tripClientId === record.clientId && !ev.deletedAt
+        );
+        for (const ev of tripEvents) {
+          const nextDate = shiftIsoDate(ev.eventDate, dateShift.deltaDays);
+          if (nextDate !== ev.eventDate) {
+            await offlineDb.putEvent({
+              ...ev,
+              eventDate: nextDate,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+            await offlineDb.enqueue({
+              type: 'event_upsert',
+              clientId: ev.clientId,
+              createdAt: now,
+            });
+            shiftedEventCount++;
+          }
+        }
+      }
+
+      if (dateShift.adjustBookings) {
+        const allBookingsRaw = await offlineDb.getAllBookingsRaw();
+        const tripBookings = allBookingsRaw.filter(
+          (bk) => bk.tripClientId === record.clientId && !bk.deletedAt
+        );
+        for (const bk of tripBookings) {
+          const nextCheckIn = shiftIsoDate(bk.checkInDate, dateShift.deltaDays);
+          const nextCheckOut = shiftIsoDate(bk.checkOutDate, dateShift.deltaDays);
+          if (nextCheckIn !== bk.checkInDate || nextCheckOut !== bk.checkOutDate) {
+            await offlineDb.putBooking({
+              ...bk,
+              checkInDate: nextCheckIn,
+              checkOutDate: nextCheckOut,
+              updatedAt: now,
+              syncStatus: 'pending',
+            });
+            await offlineDb.enqueue({
+              type: 'booking_upsert',
+              clientId: bk.clientId,
+              createdAt: now,
+            });
+            shiftedBookingCount++;
+          }
+        }
+      }
+
+      if (shiftedEventCount > 0 || shiftedBookingCount > 0) {
+        const parts: string[] = [];
+        if (shiftedEventCount > 0) {
+          parts.push(`${shiftedEventCount} ${shiftedEventCount === 1 ? 'stop' : 'stops'}`);
+        }
+        if (shiftedBookingCount > 0) {
+          parts.push(`${shiftedBookingCount} ${shiftedBookingCount === 1 ? 'stay' : 'stays'}`);
+        }
+        setSyncNotice(
+          `Rescheduled trip (${formatDayShiftLabel(dateShift.deltaDays)}): shifted ${parts.join(' and ')}.`
+        );
+      }
+    }
+
     await selectActiveTrip(record.clientId);
     await loadFromLocalDb();
     triggerSync();
@@ -2110,6 +2186,14 @@ export default function App() {
       <TripModal
         open={tripModalOpen}
         initialTrip={editingTrip}
+        tripEventCount={
+          editingTrip ? events.filter((e) => e.tripClientId === editingTrip.clientId).length : 0
+        }
+        tripBookingCount={
+          editingTrip
+            ? bookings.filter((b) => b.tripClientId === editingTrip.clientId).length
+            : 0
+        }
         authToken={session.token}
         onClose={() => setTripModalOpen(false)}
         onSave={handleSaveTrip}

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Flag, MapPin, Search, X } from 'lucide-react';
+import { Calendar, Flag, MapPin, Search, X } from 'lucide-react';
+import { diffIsoDays, formatDayShiftLabel, shiftIsoDate } from '../lib/dateShift';
 import { MiniCartoMap } from './MiniCartoMap';
 import type { TripRecord } from '../types/journal';
 
@@ -13,6 +14,8 @@ interface GeocodeCandidate {
 interface TripModalProps {
   open: boolean;
   initialTrip?: TripRecord | null;
+  tripEventCount?: number;
+  tripBookingCount?: number;
   authToken?: string;
   onClose: () => void;
   onSave: (data: {
@@ -29,6 +32,11 @@ interface TripModalProps {
     endLongitude: number | null;
     targetBudget: number | null;
     budgetCurrency: string;
+    dateShift?: {
+      deltaDays: number;
+      adjustEvents: boolean;
+      adjustBookings: boolean;
+    };
   }) => Promise<void>;
 }
 
@@ -276,6 +284,8 @@ const LocationPickerBlock: React.FC<LocationPickerBlockProps> = ({
 export const TripModal: React.FC<TripModalProps> = ({
   open,
   initialTrip,
+  tripEventCount = 0,
+  tripBookingCount = 0,
   authToken,
   onClose,
   onSave,
@@ -285,6 +295,9 @@ export const TripModal: React.FC<TripModalProps> = ({
   const [destination, setDestination] = useState('');
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
+  const [adjustEndDate, setAdjustEndDate] = useState(true);
+  const [adjustEvents, setAdjustEvents] = useState(true);
+  const [adjustBookings, setAdjustBookings] = useState(true);
   const [description, setDescription] = useState('');
 
   const [startLocationName, setStartLocationName] = useState('');
@@ -307,6 +320,9 @@ export const TripModal: React.FC<TripModalProps> = ({
       setDestination(initialTrip?.destination || '');
       setStartDate(initialTrip?.startDate || today);
       setEndDate(initialTrip?.endDate || today);
+      setAdjustEndDate(true);
+      setAdjustEvents(true);
+      setAdjustBookings(true);
       setDescription(initialTrip?.description || '');
       setStartLocationName(initialTrip?.startLocationName || '');
       setStartLatitude(
@@ -341,6 +357,32 @@ export const TripModal: React.FC<TripModalProps> = ({
   }, [open, initialTrip, today]);
 
   if (!open) return null;
+
+  const shiftDays = initialTrip ? diffIsoDays(initialTrip.startDate, startDate) : null;
+  const hasStartDateShift = Boolean(initialTrip && shiftDays !== null && shiftDays !== 0);
+
+  const handleStartDateChange = (nextStart: string) => {
+    setStartDate(nextStart);
+    if (initialTrip) {
+      const nextDelta = diffIsoDays(initialTrip.startDate, nextStart);
+      if (nextDelta !== null && adjustEndDate) {
+        setEndDate(shiftIsoDate(initialTrip.endDate, nextDelta));
+      }
+    } else if (nextStart && endDate < nextStart) {
+      setEndDate(nextStart);
+    }
+  };
+
+  const handleToggleAdjustEndDate = (checked: boolean) => {
+    setAdjustEndDate(checked);
+    if (initialTrip && shiftDays !== null) {
+      if (checked) {
+        setEndDate(shiftIsoDate(initialTrip.endDate, shiftDays));
+      } else {
+        setEndDate(initialTrip.endDate);
+      }
+    }
+  };
 
   const parseCoord = (v: string): number | null => {
     if (!v.trim()) return null;
@@ -381,6 +423,14 @@ export const TripModal: React.FC<TripModalProps> = ({
         endLongitude: parseCoord(endLongitude),
         targetBudget: parsedBudget !== null ? Number(parsedBudget.toFixed(2)) : null,
         budgetCurrency: budgetCurrency || 'USD',
+        dateShift:
+          initialTrip && shiftDays !== null && shiftDays !== 0
+            ? {
+                deltaDays: shiftDays,
+                adjustEvents,
+                adjustBookings,
+              }
+            : undefined,
       });
       onClose();
     } catch (err: unknown) {
@@ -472,31 +522,95 @@ export const TripModal: React.FC<TripModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                Start Date
-              </label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                required
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
-              />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => handleStartDateChange(e.target.value)}
+                  required
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1.5">
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => {
+                    const nextEnd = e.target.value;
+                    setEndDate(nextEnd);
+                    if (initialTrip && shiftDays !== null && shiftDays !== 0) {
+                      const expectedShiftedEnd = shiftIsoDate(initialTrip.endDate, shiftDays);
+                      setAdjustEndDate(nextEnd === expectedShiftedEnd);
+                    }
+                  }}
+                  required
+                  className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
+                />
+              </div>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1.5">
-                End Date
-              </label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                required
-                className="w-full rounded-lg border border-slate-300 px-3.5 py-2.5 text-sm text-slate-900 tabular-nums focus:border-teal-700 focus:outline-none focus:ring-2 focus:ring-teal-700/15"
-              />
-            </div>
+
+            {hasStartDateShift && initialTrip && shiftDays !== null && (
+              <div className="rounded-xl border border-teal-200 bg-teal-50/70 p-3.5 space-y-2.5">
+                <div className="flex items-center gap-2 text-xs font-semibold text-teal-950 tabular-nums">
+                  <Calendar className="w-4 h-4 text-teal-700 shrink-0" />
+                  <span>
+                    Start date shifted {formatDayShiftLabel(shiftDays)} ({initialTrip.startDate} →{' '}
+                    {startDate})
+                  </span>
+                </div>
+                <p className="text-[11px] text-teal-900/80">
+                  Optionally adjust existing dates so they stay at the same relative day offset:
+                </p>
+                <div className="space-y-1.5 text-xs text-slate-800">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={adjustEndDate}
+                      onChange={(e) => handleToggleAdjustEndDate(e.target.checked)}
+                      className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                    />
+                    <span className="tabular-nums">
+                      Shift end date ({formatDayShiftLabel(shiftDays)} →{' '}
+                      {shiftIsoDate(initialTrip.endDate, shiftDays)})
+                    </span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={adjustEvents}
+                      onChange={(e) => setAdjustEvents(e.target.checked)}
+                      className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                    />
+                    <span className="tabular-nums">
+                      Shift event dates ({tripEventCount}{' '}
+                      {tripEventCount === 1 ? 'stop' : 'stops'})
+                    </span>
+                  </label>
+
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={adjustBookings}
+                      onChange={(e) => setAdjustBookings(e.target.checked)}
+                      className="rounded border-slate-300 text-teal-700 focus:ring-teal-700"
+                    />
+                    <span className="tabular-nums">
+                      Shift stay check-in &amp; check-out dates ({tripBookingCount}{' '}
+                      {tripBookingCount === 1 ? 'stay' : 'stays'})
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Starting & Ending Locations */}
